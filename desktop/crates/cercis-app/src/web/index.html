@@ -87,6 +87,16 @@
         <span class="status" id="rowCount"></span>
       </div>
     </div>
+    <div class="row" id="pluginActions" style="margin-top:10px;"></div>
+    <div class="muted" id="pluginHint" style="margin-top:6px;"></div>
+    <div id="entryForm" style="display:none; margin-top:10px; border-top:1px dashed var(--line); padding-top:10px;">
+      <div class="row" id="entryFields"></div>
+      <div class="row" style="margin-top:8px;">
+        <button class="primary" id="entrySave">保存</button>
+        <button id="entryCancel">取消</button>
+        <span class="status" id="entryStatus"></span>
+      </div>
+    </div>
     <div class="scroll" style="margin-top:10px;">
       <table id="dataTable"><thead></thead><tbody></tbody></table>
     </div>
@@ -112,6 +122,9 @@
       <button id="validateBtn">校验项目</button>
       <button id="agentsBtn">刷新 AI 材料（AGENTS.md）</button>
       <button id="manifestBtn">生成机器清单</button>
+      <button id="healthBtn">项目体检</button>
+      <button id="importBtn">导入 CSV…</button>
+      <button id="exportBtn">导出…</button>
     </div>
     <pre id="toolOut" class="muted" style="white-space:pre-wrap; margin-top:10px;"></pre>
   </div>
@@ -122,6 +135,22 @@
       在右上角输入一个 Cercis 项目文件夹的路径，然后点「打开项目」。<br>
       还没有项目？用内核命令行创建一个：<code>cercis init ./我的项目 --name "我的项目"</code>
     </p>
+    <div style="border-top:1px dashed var(--line); margin-top:14px; padding-top:12px;">
+      <h2 id="wizardTitle">或者：用项目向导新建一个项目</h2>
+      <p class="muted" id="wizardNote">
+        项目向导是基础工具包里的一个插件（项目内插件需先信任；全局安装的插件直接可用）。
+      </p>
+      <div class="row" style="margin-top:8px;">
+        <input id="wizardPath" placeholder="新项目文件夹路径（如 ./我的项目）" style="width:300px" />
+        <input id="wizardName" placeholder="项目名称" style="width:180px" />
+        <select id="wizardTemplate">
+          <option value="generic">通用（最小可用）</option>
+          <option value="example-study">示例研究模板</option>
+        </select>
+        <button class="primary" id="wizardBtn">创建项目</button>
+      </div>
+      <pre id="wizardOut" class="muted" style="white-space:pre-wrap; margin-top:8px;"></pre>
+    </div>
   </div>
 </main>
 
@@ -136,6 +165,14 @@ const I18N = {
     rows: "行", refresh: "刷新", filterPh: "筛选：列:运算符:值（如 value_num:gt:20）",
     trust: "信任并启用", revoke: "撤销信任", trusted: "已信任", untrusted: "未信任",
     validate: "校验项目", agents: "刷新 AI 材料（AGENTS.md）", manifest: "生成机器清单",
+    health: "项目体检", importCsv: "导入 CSV…", exportData: "导出…", addRow: "新增记录…",
+    global: "全局（已安装）", notRunnable: "未信任，不运行",
+    pluginMissing: "缺少插件：装好并信任基础工具包后，这里会出现对应按钮。",
+    noProjectPlugins: "未发现插件（可把基础工具包装到项目的 plugins/ 或全局 ~/.cercis/plugins）",
+    save: "保存", cancel: "取消", running: "正在调用插件…",
+    wizardTitle: "或者：用项目向导新建一个项目",
+    wizardNote: "项目向导是基础工具包里的一个插件（项目内插件需先信任；全局安装的插件直接可用）。",
+    wizardPath: "新项目文件夹路径（如 ./我的项目）", wizardName: "项目名称", create: "创建项目",
     welcome: "在右上角输入一个 Cercis 项目文件夹的路径，然后点「打开项目」。",
     noRows: "没有数据。",
   },
@@ -146,6 +183,14 @@ const I18N = {
     rows: "rows", refresh: "Refresh", filterPh: "Filter: col:op:value (e.g. value_num:gt:20)",
     trust: "Trust & enable", revoke: "Revoke", trusted: "trusted", untrusted: "untrusted",
     validate: "Validate project", agents: "Refresh AI files (AGENTS.md)", manifest: "Generate manifest",
+    health: "Health check", importCsv: "Import CSV…", exportData: "Export…", addRow: "Add record…",
+    global: "global (installed)", notRunnable: "untrusted — not run",
+    pluginMissing: "Missing plugin: install & trust the basic kit to get these buttons here.",
+    noProjectPlugins: "No plugins found (install the basic kit into the project's plugins/ or ~/.cercis/plugins)",
+    save: "Save", cancel: "Cancel", running: "Calling plugin…",
+    wizardTitle: "Or: create a project with the project wizard",
+    wizardNote: "The wizard is a plugin of the basic kit (project plugins need trust; globally installed ones just work).",
+    wizardPath: "New project folder path", wizardName: "Project name", create: "Create project",
     welcome: "Enter the path of a Cercis project folder and click \"Open project\".",
     noRows: "No data.",
   }
@@ -153,6 +198,8 @@ const I18N = {
 let lang = "zh";
 let project = null;
 let activeTable = null;
+let plugins = [];          // 插件清单缓存（含命令与可运行状态）
+let currentColumns = [];   // 当前表的列（录入表单用）
 
 const $ = (id) => document.getElementById(id);
 
@@ -181,8 +228,18 @@ function setLang(next) {
   $("validateBtn").textContent = t().validate;
   $("agentsBtn").textContent = t().agents;
   $("manifestBtn").textContent = t().manifest;
+  $("healthBtn").textContent = t().health;
+  $("importBtn").textContent = t().importCsv;
+  $("exportBtn").textContent = t().exportData;
+  $("entrySave").textContent = t().save;
+  $("entryCancel").textContent = t().cancel;
+  $("wizardTitle").textContent = t().wizardTitle;
+  $("wizardNote").textContent = t().wizardNote;
+  $("wizardPath").placeholder = t().wizardPath;
+  $("wizardName").placeholder = t().wizardName;
+  $("wizardBtn").textContent = t().create;
   $("welcomeBody").innerHTML = t().welcome;
-  if (project) { renderTabs(); loadActiveTab(); }
+  if (project) { renderTabs(); loadActiveTab(); renderPluginActions(); }
 }
 
 function show(id, on) { $(id).style.display = on ? "" : "none"; }
@@ -199,7 +256,184 @@ async function openProject() {
   show("projectBar", true); show("welcomeCard", false);
   show("todosCard", true);
   renderTabs();
+  await refreshPlugins();
   loadActiveTab();
+}
+
+// ── 插件：发现 → 授权 → 调用 ─────────────────────────────────────────────
+// app 不实现插件能力，只把插件当子进程调用；界面按钮完全由插件清单驱动。
+
+async function refreshPlugins() {
+  const target = project ? project.path : $("wizardPath").value.trim();
+  if (!target) { plugins = []; return; }
+  const res = await apiGet("/api/plugins", { path: target });
+  plugins = res.ok ? res.plugins : [];
+}
+
+/** 找到某个命令扩展点（如 entry.append），并确认它现在可以运行。 */
+function commandOf(extId) {
+  for (const p of plugins) {
+    for (const c of (p.commands || [])) {
+      if (c.id === extId) return { plugin: p, command: c };
+    }
+  }
+  return null;
+}
+
+/** 调用插件命令：args 是额外参数；返回 app 的应答（含插件自己的结果）。*/
+async function runPlugin(extId, args) {
+  const found = commandOf(extId);
+  if (!found) return { ok: false, error: t().pluginMissing };
+  const body = { path: project.path, id: found.plugin.id, command: found.command.command, args: args || [] };
+  return await apiPost("/api/plugin/run", body);
+}
+
+/** 把插件输出整理成一段给人看的文字。 */
+function pluginText(res) {
+  if (!res.ok) {
+    const hint = res.hint ? "\n建议：" + res.hint : "";
+    return (res.error || "调用失败") + hint;
+  }
+  const r = res.result || {};
+  const lines = [];
+  lines.push("· 插件 " + res.plugin + "（" + res.command + "）");
+  if (typeof r.rows_imported === "number") lines.push("· 导入 " + r.rows_imported + " 行" + (r.dry_run ? "（试运行，未写入）" : ""));
+  if (typeof r.rows === "number") lines.push("· 处理 " + r.rows + " 行");
+  if (r.file) lines.push("· 输出文件：" + r.file);
+  if (r.readme) lines.push("· 数据说明书：" + r.readme);
+  if (r.report) lines.push("· 导入报告：" + r.report);
+  if (r.batch_id) lines.push("· 批次号：" + r.batch_id);
+  for (const w of (r.warnings || [])) lines.push("· 提醒：" + w);
+  if (r.findings) {
+    lines.push("· 体检：" + r.summary.errors + " 个问题、" + r.summary.warnings + " 个提醒、" + r.summary.infos + " 项提示");
+    for (const f of r.findings) lines.push("   [" + f.level + "] " + f.target + " " + (lang === "zh" ? f.message_cn : f.message_en));
+  }
+  if (res.stderr_tail) lines.push("· 标准错误：" + res.stderr_tail.trim());
+  return lines.join("\n");
+}
+
+/** 按插件能力渲染数据页的按钮（缺插件就说明缺什么，而不是报错）。 */
+function renderPluginActions() {
+  const bar = $("pluginActions");
+  const hint = $("pluginHint");
+  bar.innerHTML = "";
+  if (!project) return;
+
+  const wanted = [
+    ["entry.append", t().addRow, () => openEntryForm()],
+    ["transfer.import", t().importCsv, () => importCsv()],
+    ["transfer.export", t().exportData, () => exportData()],
+  ];
+  let shown = 0;
+  for (const [id, label, fn] of wanted) {
+    const found = commandOf(id);
+    if (found && found.command.enabled) {
+      const b = document.createElement("button");
+      b.textContent = label;
+      b.onclick = fn;
+      bar.appendChild(b);
+      shown++;
+    }
+  }
+  const missing = [];
+  if (!commandOf("entry.append")) missing.push("data_entry");
+  if (!commandOf("transfer.import")) missing.push("import_export");
+  if (!commandOf("health.check")) missing.push("health_check");
+  hint.textContent = shown === 0 || missing.length
+    ? t().pluginMissing + (missing.length ? "（缺：" + missing.join("、") + "）" : "")
+    : "";
+}
+
+// ── 新增记录（调用 data_entry 插件）──────────────────────────────────────
+function openEntryForm() {
+  const box = $("entryForm");
+  const fields = $("entryFields");
+  fields.innerHTML = "";
+  $("entryStatus").textContent = "";
+  for (const c of currentColumns) {
+    const wrap = document.createElement("label");
+    wrap.className = "chk";
+    const span = document.createElement("span");
+    span.textContent = (c.label || c.name) + (c.unit ? "(" + c.unit + ")" : "");
+    const input = document.createElement("input");
+    input.id = "entry_" + c.name;
+    input.placeholder = c.name;
+    input.style.width = "150px";
+    wrap.appendChild(span);
+    wrap.appendChild(input);
+    fields.appendChild(wrap);
+  }
+  box.style.display = "";
+}
+
+async function saveEntry() {
+  const sets = [];
+  for (const c of currentColumns) {
+    const el = $("entry_" + c.name);
+    if (el && el.value.trim() !== "") sets.push("--set", c.name + "=" + el.value.trim());
+  }
+  if (!sets.length) { $("entryStatus").textContent = "没有填写任何字段"; return; }
+  $("entryStatus").textContent = t().running;
+  const args = ["--table", activeTable, ...sets];
+  const res = await runPlugin("entry.append", args);
+  $("entryStatus").textContent = res.ok ? "已保存（可切到「变更流水」查看）" : "";
+  if (!res.ok) $("toolOut").textContent = pluginText(res);
+  show("entryForm", false);
+  loadTables();
+}
+
+// ── 导入 / 导出 / 体检（调用 import_export、health_check 插件）──────────
+async function importCsv() {
+  const file = prompt("要导入的 CSV 文件路径：", "");
+  if (!file) return;
+  const out = $("toolOut");
+  out.textContent = t().running;
+  // 先试运行：让用户看到"会发生什么"，再决定是否真写
+  const dry = await runPlugin("transfer.import", ["--table", activeTable, "--file", file, "--dry-run"]);
+  out.textContent = pluginText(dry);
+  if (!dry.ok) return;
+  if (!confirm("试运行通过。现在正式导入吗？")) return;
+  const real = await runPlugin("transfer.import", ["--table", activeTable, "--file", file]);
+  out.textContent = pluginText(real);
+  loadTables();
+}
+
+async function exportData() {
+  const dir = prompt("导出到哪个目录？", (project.path + "/exports"));
+  if (!dir) return;
+  const out = $("toolOut");
+  out.textContent = t().running;
+  const res = await runPlugin("transfer.export", ["--table", activeTable, "--out", dir, "--format", "csv", "--readme"]);
+  out.textContent = pluginText(res);
+}
+
+async function healthCheck() {
+  const out = $("toolOut");
+  out.textContent = t().running;
+  const res = await runPlugin("health.check", []);
+  out.textContent = pluginText(res);
+}
+
+// ── 项目向导（调用 project_wizard 插件；不需要先有项目）──────────────────
+async function createProject() {
+  const path = $("wizardPath").value.trim();
+  const name = $("wizardName").value.trim();
+  const out = $("wizardOut");
+  if (!path || !name) { out.textContent = "请填写项目路径与名称。"; return; }
+  const target = path;
+  // 先在"目标目录"上做一次插件发现（全局插件此时也能被发现）
+  const res = await apiGet("/api/plugins", { path: target });
+  plugins = res.ok ? res.plugins : [];
+  const found = commandOf("wizard.new_project");
+  out.textContent = t().running;
+  if (!found) { out.textContent = t().pluginMissing; return; }
+  const body = {
+    path: target, id: found.plugin.id, command: found.command.command,
+    args: ["--project", target, "--name", name, "--template", $("wizardTemplate").value]
+  };
+  const run = await apiPost("/api/plugin/run", body);
+  out.textContent = pluginText(run);
+  if (run.ok) { $("projectPath").value = target; await openProject(); }
 }
 
 let currentTab = "data";
@@ -263,6 +497,8 @@ async function loadTables() {
     return;
   }
   $("rowCount").textContent = res.count + " " + t().rows;
+  currentColumns = res.columns || [];
+  renderPluginActions();
   const thead = $("dataTable").querySelector("thead");
   const tbody = $("dataTable").querySelector("tbody");
   thead.innerHTML = "<tr>" + res.columns.map(c =>
@@ -276,27 +512,37 @@ async function loadTables() {
 async function loadPlugins() {
   const res = await apiGet("/api/plugins", { path: project.path });
   const tbody = $("pluginsTable").querySelector("tbody");
-  if (!res.ok || !res.plugins.length) {
-    tbody.innerHTML = `<tr><td class="empty" colspan="6">未发现插件 / No plugins</td></tr>`;
+  plugins = res.ok ? res.plugins : [];
+  if (!plugins.length) {
+    tbody.innerHTML = `<tr><td class="empty" colspan="6">${t().noProjectPlugins}</td></tr>`;
+    renderPluginActions();
     return;
   }
   tbody.innerHTML = "";
-  for (const p of res.plugins) {
+  for (const p of plugins) {
     const tr = document.createElement("tr");
-    const ext = (p.ui_extensions || []).map(u => `<span class="tag">${u.kind}: ${u.label||u.id}</span>`).join(" ");
+    const ext = (p.ui_extensions || []).map(u => `<span class="tag">${u.kind}: ${u.label||u.id}</span>`).join(" ")
+      + ((p.commands || []).length ? "<br>" + p.commands.map(c =>
+          `<span class="tag ${c.enabled ? "ok" : "warn"}">▶ ${c.label} <span class="muted">(${c.command||"默认"})</span></span>`).join(" ") : "");
+    const status = p.origin === "global"
+      ? `<span class="tag ok">${t().global}</span>`
+      : (p.trusted ? `<span class="tag ok">${t().trusted}</span>` : `<span class="tag warn">${t().untrusted}</span>`);
     tr.innerHTML = `<td>${p.name}<br><span class="muted">${p.id}</span></td>
       <td>${p.origin}</td><td>${p.permissions}</td><td>${ext||"<span class=muted>—</span>"}</td>
-      <td>${p.trusted ? '<span class="tag ok">'+t().trusted+'</span>' : '<span class="tag warn">'+t().untrusted+'</span>'}</td>
+      <td>${status}${p.runnable ? "" : '<br><span class="muted">'+t().notRunnable+"</span>"}</td>
       <td></td>`;
     const btn = document.createElement("button");
     btn.textContent = p.trusted ? t().revoke : t().trust;
     btn.onclick = async () => {
       const r = await apiPost("/api/trust", { path: project.path, id: p.id, revoke: p.trusted });
-      if (!r.ok) alert(r.error); else loadPlugins();
+      if (!r.ok) alert(r.error);
+      await loadPlugins();
+      renderPluginActions();
     };
     tr.lastElementChild.appendChild(btn);
     tbody.appendChild(tr);
   }
+  renderPluginActions();
 }
 
 async function loadLog() {
@@ -334,6 +580,12 @@ $("langSel").onchange = (e) => setLang(e.target.value);
 $("validateBtn").onclick = () => runTool("validate");
 $("agentsBtn").onclick = () => runTool("agents");
 $("manifestBtn").onclick = () => runTool("manifest");
+$("healthBtn").onclick = healthCheck;
+$("importBtn").onclick = importCsv;
+$("exportBtn").onclick = exportData;
+$("entrySave").onclick = saveEntry;
+$("entryCancel").onclick = () => show("entryForm", false);
+$("wizardBtn").onclick = createProject;
 $("projectPath").addEventListener("keydown", (e) => { if (e.key === "Enter") openProject(); });
 setLang("zh");
 </script>

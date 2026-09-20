@@ -11,6 +11,7 @@
 
 mod api;
 mod http;
+mod plugin_host;
 mod web;
 
 use std::process::Command;
