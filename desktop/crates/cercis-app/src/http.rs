@@ -89,7 +89,7 @@ where
     // 请求行
     let mut line = String::new();
     reader.read_line(&mut line)?;
-    let mut parts = line.trim().split_whitespace();
+    let mut parts = line.split_whitespace();
     let method = parts.next().unwrap_or("").to_string();
     let target = parts.next().unwrap_or("/").to_string();
 
@@ -195,7 +195,7 @@ fn write_response(stream: &mut TcpStream, resp: &Response) -> std::io::Result<()
         resp.status,
         status_text(resp.status),
         resp.content_type,
-        resp.body.as_bytes().len()
+        resp.body.len()
     );
     stream.write_all(head.as_bytes())?;
     stream.write_all(resp.body.as_bytes())?;
