@@ -160,6 +160,29 @@
     </thead><tbody></tbody></table></div>
   </div>
 
+  <div class="card" id="accessCard" style="display:none;">
+    <h2 id="accessTitle"></h2>
+    <p class="muted" id="accessNote"></p>
+    <div class="muted" id="accessState" style="margin-top:6px;"></div>
+    <div class="row" style="margin-top:10px;">
+      <select id="accessMember" style="width:170px;"></select>
+      <input id="accessPassword" type="password" style="width:230px;" />
+      <label class="muted" style="display:flex; align-items:center; gap:4px;">
+        <input type="checkbox" id="accessRemember" /> <span id="accessRememberLabel"></span>
+      </label>
+      <button id="accessUnlockBtn" class="primary"></button>
+      <button id="accessLockBtn"></button>
+      <span class="status" id="accessStatus"></span>
+    </div>
+    <div class="scroll" style="margin-top:12px;">
+      <table id="accessTable"><thead>
+        <tr><th id="accessThZone"></th><th id="accessThMembers"></th><th id="accessThFiles"></th><th id="accessThKey"></th><th id="accessThPerm"></th></tr>
+      </thead><tbody></tbody></table>
+    </div>
+    <h2 style="margin-top:16px; font-size:15px;" id="accessProblemsTitle"></h2>
+    <pre class="muted" id="accessProblems" style="white-space:pre-wrap;"></pre>
+  </div>
+
   <div class="card" id="logCard" style="display:none;">
     <h2>变更流水</h2>
     <div class="scroll"><table id="logTable"><thead>
@@ -212,7 +235,7 @@ const I18N = {
   zh: {
     slogan: "愿瑟希斯捍卫你的思想。",
     open: "打开项目", placeholder: "项目文件夹路径",
-    tabs: { data: "数据", plugins: "插件", market: "插件市场", log: "变更流水", tools: "工具", todos: "待办" },
+    tabs: { data: "数据", plugins: "插件", market: "插件市场", access: "加密区域", log: "变更流水", tools: "工具", todos: "待办" },
     rows: "行", refresh: "刷新", filterPh: "筛选：列:运算符:值（如 value_num:gt:20）",
     trust: "信任并启用", revoke: "撤销信任", trusted: "已信任", untrusted: "未信任",
     validate: "校验项目", agents: "刷新 AI 材料（AGENTS.md）", manifest: "生成机器清单",
@@ -258,11 +281,30 @@ const I18N = {
     desiredCheck: "对账", desiredApply: "对齐", desiredAligned: "已对齐",
     desiredMissing: "要装：", desiredExtra: "多余（可删）：", desiredState: "状态要改：",
     updatesTitle: "可更新", updateBtn: "更新", permChanged: "权限有变化，升级前请确认：",
+    // 加密区域（S11）
+    accessTitle: "加密区域（默认不加密：只有划进来的部分在磁盘上是密文）",
+    accessNote: "成员用自己的口令解锁自己有权访问的区域；口令不存进项目、不经过网络。移除成员会自动换密钥并重新加密。",
+    accessLocked: "当前未解锁：加密区域里的表显示为「锁着」，内容读不出来。",
+    accessAs: "当前身份：",
+    accessMember: "成员",
+    accessPassword: "口令",
+    accessUnlock: "解锁",
+    accessLockBtn: "上锁",
+    accessRemember: "把口令交给系统钥匙串保管（下次免输入）",
+    accessZone: "区域",
+    accessMembersCol: "成员与权限",
+    accessFiles: "密文文件",
+    accessKey: "密钥指纹",
+    accessPermission: "我的权限",
+    accessProblems: "需要处理",
+    accessNone: "本项目还没有加密区域。（想加密某部分内容：管理员用 cercis share zone-create 配置。）",
+    accessPlaintextLeft: "还有没加密的明文",
+    accessUnreadable: "有解不开的密文",
   },
   en: {
     slogan: "May Cerces safeguard your thoughts.",
     open: "Open project", placeholder: "Project folder path",
-    tabs: { data: "Data", plugins: "Plugins", market: "Market", log: "Change log", tools: "Tools", todos: "To-dos" },
+    tabs: { data: "Data", plugins: "Plugins", market: "Market", access: "Encrypted zones", log: "Change log", tools: "Tools", todos: "To-dos" },
     rows: "rows", refresh: "Refresh", filterPh: "Filter: col:op:value (e.g. value_num:gt:20)",
     trust: "Trust & enable", revoke: "Revoke", trusted: "trusted", untrusted: "untrusted",
     validate: "Validate project", agents: "Refresh AI files (AGENTS.md)", manifest: "Generate manifest",
@@ -307,6 +349,25 @@ const I18N = {
     desiredCheck: "Check", desiredApply: "Align", desiredAligned: "aligned",
     desiredMissing: "to install: ", desiredExtra: "extra (removable): ", desiredState: "state changes: ",
     updatesTitle: "Updates available", updateBtn: "Update", permChanged: "Permissions changed — confirm before upgrading: ",
+    // Encrypted zones (S11)
+    accessTitle: "Encrypted zones (nothing is encrypted by default: only what you put inside a zone is ciphertext on disk)",
+    accessNote: "Each member unlocks the zones they are allowed to see with their own password. Passwords never enter the project and never leave the machine. Removing a member rotates the key and re-encrypts the zone.",
+    accessLocked: "Not unlocked: tables inside encrypted zones show up as locked until you unlock.",
+    accessAs: "Acting as:",
+    accessMember: "Member",
+    accessPassword: "Password",
+    accessUnlock: "Unlock",
+    accessLockBtn: "Lock",
+    accessRemember: "Let the system keychain remember the password (skip it next time)",
+    accessZone: "Zone",
+    accessMembersCol: "Members & permissions",
+    accessFiles: "Ciphertext files",
+    accessKey: "Key fingerprint",
+    accessPermission: "My permission",
+    accessProblems: "Needs attention",
+    accessNone: "No encrypted zones in this project yet. (Admins can create one with: cercis share zone-create)",
+    accessPlaintextLeft: "plaintext left to encrypt",
+    accessUnreadable: "ciphertext that cannot be opened",
   }
 };
 let lang = "zh";
@@ -571,13 +632,98 @@ function loadActiveTab() {
   show("dataCard", currentTab === "data");
   show("pluginsCard", currentTab === "plugins");
   show("marketCard", currentTab === "market");
+  show("accessCard", currentTab === "access");
   show("logCard", currentTab === "log");
   show("toolsCard", currentTab === "tools");
   show("todosCard", currentTab === "todos");
   if (currentTab === "data") loadTables();
   if (currentTab === "plugins") loadPlugins();
   if (currentTab === "market") loadMarket();
+  if (currentTab === "access") loadAccess();
   if (currentTab === "log") loadLog();
+}
+
+// ———— 加密区域（S11）：状态、解锁、上锁 ————
+async function loadAccess() {
+  $("accessTitle").textContent = t().accessTitle;
+  $("accessNote").textContent = t().accessNote;
+  $("accessUnlockBtn").textContent = t().accessUnlock;
+  $("accessLockBtn").textContent = t().accessLockBtn;
+  $("accessRememberLabel").textContent = t().accessRemember;
+  $("accessThZone").textContent = t().accessZone;
+  $("accessThMembers").textContent = t().accessMembersCol;
+  $("accessThFiles").textContent = t().accessFiles;
+  $("accessThKey").textContent = t().accessKey;
+  $("accessThPerm").textContent = t().accessPermission;
+  $("accessProblemsTitle").textContent = t().accessProblems;
+  $("accessPassword").placeholder = t().accessPassword;
+
+  const res = await apiGet("/api/access", { path: project.path });
+  const tbody = $("accessTable").querySelector("tbody");
+  tbody.innerHTML = "";
+  if (!res.ok) {
+    $("accessState").textContent = res.error || "";
+    return;
+  }
+
+  // 成员下拉：谁在这台机器上解锁过就标出来
+  const sel = $("accessMember");
+  const keep = sel.value;
+  sel.innerHTML = "";
+  for (const m of (res.members || [])) {
+    const opt = document.createElement("option");
+    opt.value = m.id;
+    const unlocked = (res.unlocked_members || []).includes(m.id);
+    opt.textContent = (m.display_name && m.display_name !== m.id)
+      ? `${m.display_name}（${m.id}）${unlocked ? " ✓" : ""}`
+      : `${m.id}${unlocked ? " ✓" : ""}`;
+    sel.appendChild(opt);
+  }
+  if (keep) sel.value = keep;
+  if (res.unlocked_as && !keep) sel.value = res.unlocked_as;
+
+  $("accessState").textContent = res.unlocked_as
+    ? t().accessAs + res.unlocked_as
+    : t().accessLocked;
+
+  if (!res.zones.length) {
+    tbody.innerHTML = `<tr><td class="empty" colspan="5">${t().accessNone}</td></tr>`;
+  }
+  for (const z of res.zones) {
+    const tr = document.createElement("tr");
+    const flags = [];
+    if ((z.plaintext_left || []).length) flags.push(`<span class="tag warn">${t().accessPlaintextLeft}: ${z.plaintext_left.length}</span>`);
+    if (z.unreadable) flags.push(`<span class="tag warn">${t().accessUnreadable}: ${z.unreadable}</span>`);
+    tr.innerHTML = `<td>${z.label || z.zone}<br><span class="muted">${z.zone} · gen ${z.generation}</span></td>
+      <td>${(z.members || []).map(m => `<div>${m.id} <span class="muted">${m.permission}</span></div>`).join("")}</td>
+      <td>${z.files} ${flags.length ? "<br>" + flags.join(" ") : ""}</td>
+      <td><span class="muted">${z.key_fingerprint}</span></td>
+      <td>${z.permission ? z.permission : "<span class=muted>—</span>"}</td>`;
+    tbody.appendChild(tr);
+  }
+
+  $("accessProblems").textContent = (res.issues || []).join("\n");
+  $("accessStatus").textContent = "";
+}
+
+async function unlockAccess() {
+  const member = $("accessMember").value;
+  const password = $("accessPassword").value;
+  if (!member || !password) { alert(t().accessPassword); return; }
+  $("accessStatus").textContent = "…";
+  const r = await apiPost("/api/access/unlock", {
+    path: project.path, member, password,
+    remember: $("accessRemember").checked, ttl_hours: 12
+  });
+  $("accessPassword").value = "";   // 口令只在这一次请求里用，界面不留
+  $("accessStatus").textContent = r.ok ? "✓" : (r.error || "");
+  if (r.ok) { await loadAccess(); await loadTables(); }
+}
+
+async function lockAccess() {
+  const r = await apiPost("/api/access/lock", { path: project.path });
+  $("accessStatus").textContent = r.ok ? "✓" : (r.error || "");
+  await loadAccess();
 }
 
 async function loadTables() {
@@ -962,6 +1108,8 @@ $("exportBtn").onclick = exportData;
 $("entrySave").onclick = saveEntry;
 $("entryCancel").onclick = () => show("entryForm", false);
 $("wizardBtn").onclick = createProject;
+$("accessUnlockBtn").onclick = unlockAccess;
+$("accessLockBtn").onclick = lockAccess;
 $("projectPath").addEventListener("keydown", (e) => { if (e.key === "Enter") openProject(); });
 setLang("zh");
 </script>

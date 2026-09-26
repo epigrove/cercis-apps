@@ -75,14 +75,14 @@ pub fn handle(req: &Request) -> Response {
                         .unwrap_or_else(|_| cercis_core::Template::generic());
                     let mut tables = Vec::new();
                     for t in &template.tables {
-                        let table_path = p.root().join("tables").join(format!("{}.csv", t.name));
-                        let (rows, cols) = if table_path.exists() {
-                            match cercis_core::Table::load(&table_path) {
-                                Ok(tb) => (tb.rows.len(), tb.columns.clone()),
-                                Err(_) => (0, vec![]),
+                        // 走内核的存储层：加密区域里的表在磁盘上是密文，
+                        // 这里会自动透明解密；没解锁就报 0 行而不是崩掉。
+                        let (rows, cols, locked) = match p.store.load_table(&t.name, &[]) {
+                            Ok(tb) => (tb.rows.len(), tb.columns.clone(), false),
+                            Err(e) => {
+                                let locked = e.to_string().contains("加密区域");
+                                (0, vec![], locked)
                             }
-                        } else {
-                            (0, vec![])
                         };
                         tables.push(json!({
                             "name": t.name,
@@ -90,6 +90,7 @@ pub fn handle(req: &Request) -> Response {
                             "primary_key": t.primary_key,
                             "rows": rows,
                             "columns": cols,
+                            "locked": locked,
                         }));
                     }
                     Response::json(
@@ -233,6 +234,130 @@ pub fn handle(req: &Request) -> Response {
                     Err(e) => Response::error(500, &e.to_string()),
                 },
                 Err(e) => Response::error(404, &e.to_string()),
+            }
+        }
+
+        // 加密区域状态（S11）：区域、成员、有没有明文残留、当前解锁身份
+        "/api/access" => {
+            let Some(path) = req.query.get("path") else {
+                return Response::error(400, lang.t("缺少 path 参数", "missing path parameter"));
+            };
+            let root = std::path::Path::new(path);
+            let member = req.query.get("member").map(|s| s.as_str());
+            match cercis_core::access::status(root, member) {
+                Ok(st) => {
+                    let issues = cercis_core::access::doctor_issues(root).unwrap_or_default();
+                    Response::json(
+                        &json!({
+                            "ok": true,
+                            "members": st.members.iter().map(|m| json!({
+                                "id": m.id,
+                                "display_name": m.display_name,
+                            })).collect::<Vec<_>>(),
+                            "unlocked_as": st.session_member,
+                            "unlocked_members": cercis_core::access::unlocked_members(root),
+                            "keychain_available": st.keychain_available,
+                            "share_home": st.share_home,
+                            "zones": st.zones.iter().map(|z| json!({
+                                "zone": z.zone,
+                                "label": z.label,
+                                "generation": z.generation,
+                                "key_fingerprint": z.key_fingerprint,
+                                "files": z.files,
+                                "bytes": z.bytes,
+                                "permission": z.permission.map(|p| p.as_str()),
+                                "plaintext_left": z.plaintext_left,
+                                "unreadable": z.unreadable,
+                                "members": z.members.iter().map(|(id, p)| json!({
+                                    "id": id, "permission": p.as_str(),
+                                })).collect::<Vec<_>>(),
+                            })).collect::<Vec<_>>(),
+                            "issues": issues,
+                        })
+                        .to_string(),
+                    )
+                }
+                Err(e) => Response::error(400, &e.to_string()),
+            }
+        }
+
+        // 解锁（S11）：口令由用户在界面上输入；app **不留存**口令，也不写进项目
+        "/api/access/unlock" => {
+            if req.method != "POST" {
+                return Response::error(400, "POST only");
+            }
+            let body: Value = match serde_json::from_str(&req.body) {
+                Ok(v) => v,
+                Err(e) => return Response::error(400, &format!("body 不是 JSON：{e}")),
+            };
+            let path = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let member = body.get("member").and_then(|v| v.as_str()).unwrap_or("");
+            let password = body.get("password").and_then(|v| v.as_str()).unwrap_or("");
+            if path.is_empty() || member.is_empty() || password.is_empty() {
+                return Response::error(
+                    400,
+                    lang.t(
+                        "需要 path、member 与 password",
+                        "path, member and password are required",
+                    ),
+                );
+            }
+            let ttl = body
+                .get("ttl_hours")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(12);
+            let remember = body
+                .get("remember")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            match cercis_core::access::unlock(
+                std::path::Path::new(path),
+                member,
+                password,
+                ttl,
+                remember,
+            ) {
+                Ok(rep) => Response::json(
+                    &json!({
+                        "ok": true,
+                        "member": rep.member,
+                        "expires": rep.expires,
+                        "zones": rep.zones.iter().map(|z| json!({
+                            "name": z.name,
+                            "permission": z.permission.as_str(),
+                            "key_fingerprint": z.key_fingerprint,
+                        })).collect::<Vec<_>>(),
+                        "notes": rep.notes,
+                    })
+                    .to_string(),
+                ),
+                Err(e) => Response::error(400, &e.to_string()),
+            }
+        }
+
+        // 上锁（S11）：清掉本机会话（可选连钥匙串里的口令一起删）
+        "/api/access/lock" => {
+            if req.method != "POST" {
+                return Response::error(400, "POST only");
+            }
+            let body: Value = match serde_json::from_str(&req.body) {
+                Ok(v) => v,
+                Err(e) => return Response::error(400, &format!("body 不是 JSON：{e}")),
+            };
+            let path = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            if path.is_empty() {
+                return Response::error(400, lang.t("缺少 path", "missing path"));
+            }
+            let member = body.get("member").and_then(|v| v.as_str());
+            let forget = body
+                .get("forget")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            match cercis_core::access::lock(std::path::Path::new(path), member, forget) {
+                Ok(locked) => {
+                    Response::json(&json!({ "ok": true, "locked": locked }).to_string())
+                }
+                Err(e) => Response::error(400, &e.to_string()),
             }
         }
 
@@ -1038,4 +1163,112 @@ fn default_market_id(repository: &str) -> String {
         .unwrap_or("market")
         .trim_end_matches(".git")
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn req(method: &str, path: &str, query: &[(&str, &str)], body: &str) -> Request {
+        Request {
+            method: method.to_string(),
+            path: path.to_string(),
+            query: query
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            body: body.to_string(),
+        }
+    }
+
+    /// S11：app 侧的加密区域端点——状态可读、打开项目时会"锁着"、解锁后可用、上锁能收尾。
+    #[test]
+    fn access_endpoints_report_and_unlock() {
+        let dir = std::env::temp_dir().join("cercis-app-access-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let project = dir.join("proj");
+        std::env::set_var("CERCIS_SHARE_HOME", dir.join("share-home"));
+        std::env::set_var("CERCIS_SHARE_KDF", "light");
+        std::env::set_var("CERCIS_KEYCHAIN", "off");
+
+        let p = cercis_core::Project::create(&project, "app 加密试验", Default::default()).unwrap();
+        let mut row = cercis_core::table::Row::new();
+        row.insert("record_id".into(), "R-1".into());
+        row.insert("secret_note".into(), "机密X9".into());
+        p.store
+            .append_row_extending("records", &[], row, "R-1", "写一条用于加密的测试数据")
+            .unwrap();
+        cercis_core::access::create_member(
+            p.root(),
+            "alice",
+            "张老师",
+            "alice-pw",
+            cercis_core::crypto::KdfParams::light(),
+            "",
+        )
+        .unwrap();
+        cercis_core::access::create_zone(
+            p.root(),
+            "secret-records",
+            "机密的",
+            &["tables/records.csv".to_string()],
+            &[("alice".to_string(), cercis_core::Permission::Admin)],
+            true,
+            false,
+        )
+        .unwrap();
+
+        let path = project.to_str().unwrap();
+        let res = handle(&req("GET", "/api/access", &[("path", path)], ""));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["zones"][0]["zone"], "secret-records");
+        assert_eq!(body["zones"][0]["files"], 1);
+        assert_eq!(body["zones"][0]["permission"], Value::Null);
+
+        let res = handle(&req("GET", "/api/open", &[("path", path)], ""));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let records = body["tables"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "records")
+            .expect("模板里的表要出现在概览里");
+        assert_eq!(records["locked"], true);
+
+        let res = handle(&req(
+            "POST",
+            "/api/access/unlock",
+            &[],
+            &format!(r#"{{"path":"{path}","member":"alice","password":"alice-pw"}}"#),
+        ));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["ok"], true, "{body}");
+        assert_eq!(body["zones"][0]["permission"], "admin");
+
+        let res = handle(&req("GET", "/api/open", &[("path", path)], ""));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let records = body["tables"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "records")
+            .unwrap();
+        assert_eq!(records["locked"], false);
+        assert_eq!(records["rows"], 1);
+
+        let res = handle(&req(
+            "POST",
+            "/api/access/lock",
+            &[],
+            &format!(r#"{{"path":"{path}"}}"#),
+        ));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["ok"], true);
+
+        std::env::remove_var("CERCIS_SHARE_HOME");
+        std::env::remove_var("CERCIS_SHARE_KDF");
+        std::env::remove_var("CERCIS_KEYCHAIN");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
