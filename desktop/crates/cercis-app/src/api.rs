@@ -503,6 +503,28 @@ pub fn handle(req: &Request) -> Response {
                     })
                 })
                 .collect();
+            // 可更新：只拿**已缓存的**清单算，不联网（刷新清单才联网）
+            let installs = cercis_core::Installs::load(
+                &crate::plugin_host::global_plugins_dir().unwrap_or_else(|| std::path::PathBuf::from(".")),
+            )
+            .unwrap_or_default();
+            let updates: Vec<Value> = markets
+                .iter()
+                .filter_map(|m| m.get("id").and_then(|v| v.as_str()))
+                .filter_map(|id| crate::market_host::cached_listing(id))
+                .flat_map(|(_, listing)| cercis_core::market::check_updates(&installs, &listing))
+                .filter(|u| u.actionable())
+                .map(|u| {
+                    json!({
+                        "id": u.id,
+                        "installed_version": u.installed_version,
+                        "available_version": u.available_version,
+                        "needs_reconfirmation": u.needs_reconfirmation,
+                        "permissions_installed": u.permissions_installed,
+                        "permissions_available": u.permissions_available,
+                    })
+                })
+                .collect();
             let removed: Vec<Value> = crate::market_host::removed()
                 .iter()
                 .map(|r| {
@@ -521,6 +543,7 @@ pub fn handle(req: &Request) -> Response {
                     "global_dir": global.map(|d| d.display().to_string()),
                     "markets": markets,
                     "installed": installed,
+                    "updates": updates,
                     "removed": removed,
                     "has_git": crate::market_host::has_git(),
                 })
@@ -830,8 +853,180 @@ pub fn handle(req: &Request) -> Response {
             Response::json(&json!({ "ok": true, "action": verb, "id": id }).to_string())
         }
 
+        // 期望状态：看差异（plugins/desired.yaml）
+        "/api/plugins/desired" => {
+            let path = req.query.get("path").map(|s| s.as_str()).unwrap_or("");
+            if path.is_empty() {
+                return Response::error(400, lang.t("缺少 path", "missing path"));
+            }
+            let Some(desired) = (match cercis_core::Desired::load_optional(path) {
+                Ok(d) => d,
+                Err(e) => return Response::error(500, &e.to_string()),
+            }) else {
+                return Response::json(
+                    &json!({
+                        "ok": true,
+                        "present": false,
+                        "hint": lang.t(
+                            "还没有 plugins/desired.yaml：写下「想要装哪些插件」，就能一键对齐",
+                            "No plugins/desired.yaml yet",
+                        ),
+                    })
+                    .to_string(),
+                );
+            };
+            let d = desired_diff(path, &desired);
+            Response::json(
+                &json!({
+                    "ok": true,
+                    "present": true,
+                    "aligned": d.is_empty(),
+                    "diff": d,
+                })
+                .to_string(),
+            )
+        }
+
+        // 期望状态：写入（app 里编辑后保存）
+        "/api/plugins/desired/write" => {
+            if req.method != "POST" {
+                return Response::error(400, "POST only");
+            }
+            let body: Value = match serde_json::from_str(&req.body) {
+                Ok(v) => v,
+                Err(e) => return Response::error(400, &format!("JSON 解析失败: {e}")),
+            };
+            let path = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let Some(text) = body.get("yaml").and_then(|v| v.as_str()) else {
+                return Response::error(400, lang.t("缺少 yaml", "missing yaml"));
+            };
+            let desired = match cercis_core::Desired::from_yaml(text) {
+                Ok(d) => d,
+                Err(e) => return Response::error(400, &e.to_string()),
+            };
+            match desired.save(path) {
+                Ok(()) => Response::json(&json!({ "ok": true }).to_string()),
+                Err(e) => Response::error(500, &e.to_string()),
+            }
+        }
+
+        // 期望状态：对齐（改状态 + 用**已缓存**的市场目录把缺的装上；不联网）
+        "/api/plugins/reconcile" => {
+            if req.method != "POST" {
+                return Response::error(400, "POST only");
+            }
+            let body: Value = match serde_json::from_str(&req.body) {
+                Ok(v) => v,
+                Err(e) => return Response::error(400, &format!("JSON 解析失败: {e}")),
+            };
+            let path = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let dry_run = body.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+            let Some(desired) = (match cercis_core::Desired::load_optional(path) {
+                Ok(d) => d,
+                Err(e) => return Response::error(500, &e.to_string()),
+            }) else {
+                return Response::error(404, "还没有 plugins/desired.yaml");
+            };
+            let d = desired_diff(path, &desired);
+
+            let mut applied: Vec<String> = Vec::new();
+            for id in &d.to_disable {
+                applied.push(format!("停用 {id}"));
+            }
+            for id in &d.to_block {
+                applied.push(format!("屏蔽 {id}"));
+            }
+            for id in &d.to_unblock {
+                applied.push(format!("取消屏蔽 {id}"));
+            }
+            for id in &d.to_enable {
+                applied.push(format!("启用 {id}"));
+            }
+
+            let mut installed: Vec<Value> = Vec::new();
+            let mut skipped: Vec<String> = Vec::new();
+            let mut state = match cercis_core::plugin::PluginState::load(path) {
+                Ok(s) => s,
+                Err(e) => return Response::error(500, &e.to_string()),
+            };
+            if !dry_run && !applied.is_empty() {
+                for id in &d.to_disable {
+                    state.disable(id);
+                }
+                for id in &d.to_block {
+                    state.block(id);
+                }
+                for id in &d.to_unblock {
+                    state.unblock(id);
+                }
+                for id in &d.to_enable {
+                    state.enable(id);
+                }
+                if let Err(e) = state.save(path) {
+                    return Response::error(500, &e.to_string());
+                }
+                if let Ok(p) = Project::open(path, None) {
+                    let _ = p.store.append_change(&cercis_core::history::ChangeEntry::new(
+                        &p.store.identity.user_id,
+                        &p.store.identity.device_for_log(),
+                        "reconcile",
+                        "plugin",
+                        "",
+                        &format!("按期望状态对齐：{}", applied.join("、")),
+                        "",
+                        "",
+                    ));
+                }
+            }
+
+            // 缺的插件：优先用缓存里的市场目录装（app 已经下载过的那种）
+            for w in &d.missing {
+                let Some((dir, _listing)) = crate::market_host::cached_listing(&w.market) else {
+                    skipped.push(format!(
+                        "{}：市场 {} 的清单还没下载——先在上面点「下载/刷新清单」",
+                        w.id, w.market
+                    ));
+                    continue;
+                };
+                if dry_run {
+                    installed.push(json!({ "id": w.id, "planned": true }));
+                    continue;
+                }
+                match crate::market_host::install_from(&dir, &w.id, &w.market, &w.git_ref) {
+                    Ok((record, _dest)) => {
+                        installed.push(json!({ "id": record.id, "version": record.version }))
+                    }
+                    Err(e) => skipped.push(format!("{}：{e}", w.id)),
+                }
+            }
+
+            Response::json(
+                &json!({
+                    "ok": true,
+                    "dry_run": dry_run,
+                    "diff": d,
+                    "applied": applied,
+                    "installed": installed,
+                    "skipped": skipped,
+                })
+                .to_string(),
+            )
+        }
+
         _ => Response::error(404, "unknown endpoint"),
     }
+}
+
+/// 期望状态对账（发现 + 台账 + 状态 → 差异）。
+fn desired_diff(project: &str, desired: &cercis_core::Desired) -> cercis_core::DesiredDiff {
+    let found = cercis_core::plugin::discover(project, crate::plugin_host::global_plugins_dir().as_deref())
+        .unwrap_or_default();
+    let known: Vec<String> = found.iter().map(|p| p.manifest.id.clone()).collect();
+    let installs = crate::plugin_host::global_plugins_dir()
+        .and_then(|d| cercis_core::Installs::load(&d).ok())
+        .unwrap_or_default();
+    let state = cercis_core::plugin::PluginState::load(project).unwrap_or_default();
+    cercis_core::desired::diff(desired, &installs, &state, &known)
 }
 
 /// 从仓库地址推一个市场 id（`.../cercis-kits-research.git` → `cercis-kits-research`）。

@@ -141,6 +141,19 @@
       <tr><th>插件</th><th>版本</th><th>来源</th><th>指纹</th><th></th></tr>
     </thead><tbody></tbody></table></div>
 
+    <h2 style="margin-top:16px; font-size:15px;" id="updatesTitle"></h2>
+    <div class="scroll"><table id="updatesTable"><thead>
+      <tr><th>插件</th><th>已装</th><th>可用</th><th>说明</th><th></th></tr>
+    </thead><tbody></tbody></table></div>
+
+    <h2 style="margin-top:16px; font-size:15px;" id="desiredTitle"></h2>
+    <div class="row">
+      <button id="desiredCheckBtn"></button>
+      <button id="desiredApplyBtn" class="primary"></button>
+      <span class="status" id="desiredStatus"></span>
+    </div>
+    <pre class="muted" id="desiredOut" style="white-space:pre-wrap; margin-top:8px;"></pre>
+
     <h2 style="margin-top:16px; font-size:15px;" id="marketRemovedTitle"></h2>
     <div class="scroll"><table id="marketRemovedTable"><thead>
       <tr><th>插件</th><th>版本</th><th>删除时间</th><th>理由</th><th></th></tr>
@@ -240,6 +253,11 @@ const I18N = {
     pluginBlock: "屏蔽", pluginUnblock: "取消屏蔽",
     pluginDisabled: "已停用", pluginBlocked: "已屏蔽（界面不出现）",
     pluginInactive: "已装未生效",
+    desiredTitle: "期望状态（plugins/desired.yaml）",
+    desiredNone: "还没有这份文件：写下「想要装哪些插件、停用/屏蔽哪些」，换设备时一键对齐。",
+    desiredCheck: "对账", desiredApply: "对齐", desiredAligned: "已对齐",
+    desiredMissing: "要装：", desiredExtra: "多余（可删）：", desiredState: "状态要改：",
+    updatesTitle: "可更新", updateBtn: "更新", permChanged: "权限有变化，升级前请确认：",
   },
   en: {
     slogan: "May Cerces safeguard your thoughts.",
@@ -284,6 +302,11 @@ const I18N = {
     pluginBlock: "Block", pluginUnblock: "Unblock",
     pluginDisabled: "disabled", pluginBlocked: "blocked (hidden)",
     pluginInactive: "installed, not active",
+    desiredTitle: "Desired state (plugins/desired.yaml)",
+    desiredNone: "No desired-state file yet: write down what you want installed/disabled/blocked, then align on any device.",
+    desiredCheck: "Check", desiredApply: "Align", desiredAligned: "aligned",
+    desiredMissing: "to install: ", desiredExtra: "extra (removable): ", desiredState: "state changes: ",
+    updatesTitle: "Updates available", updateBtn: "Update", permChanged: "Permissions changed — confirm before upgrading: ",
   }
 };
 let lang = "zh";
@@ -763,6 +786,44 @@ async function loadMarket() {
   }
   if (!res.installed.length) it.innerHTML = `<tr><td class="empty" colspan="5">—</td></tr>`;
 
+  // 可更新（只提示；权限有变化要先确认）
+  $("updatesTitle").textContent = t().updatesTitle;
+  const ut = $("updatesTable").querySelector("tbody");
+  ut.innerHTML = "";
+  for (const u of (res.updates || [])) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${u.id}</td><td>${u.installed_version}</td><td>${u.available_version}</td>
+      <td>${u.needs_reconfirmation
+        ? `<span class="tag warn">${t().permChanged}${u.permissions_installed} → ${u.permissions_available}</span>`
+        : '<span class="muted">—</span>'}</td><td></td>`;
+    const btn = document.createElement("button");
+    btn.className = "primary";
+    btn.textContent = t().updateBtn;
+    btn.onclick = async () => {
+      if (u.needs_reconfirmation &&
+          !confirm(`${t().permChanged}\n  ${u.permissions_installed}\n→ ${u.permissions_available}`)) return;
+      btn.disabled = true;
+      // 更新 = 用市场里那份重新装一遍（覆盖），来源/版本/指纹都会刷新
+      const r = await apiPost("/api/market/refresh", { id: u.market || "" });
+      const marketId = (res.markets.find(m => (m.plugins || []).some(p => p.id === u.id)) || {}).id || "";
+      const inst = marketId
+        ? await apiPost("/api/market/install", { id: marketId, plugin: u.id })
+        : await apiPost("/api/market/install", { plugin: u.id, id: "" });
+      btn.disabled = false;
+      if (!inst.ok) alert(inst.error || (r && r.error) || "");
+      else { alert(`${inst.id} → v${inst.version}`); await loadMarket(); }
+    };
+    tr.lastElementChild.appendChild(btn);
+    ut.appendChild(tr);
+  }
+  if (!(res.updates || []).length) ut.innerHTML = `<tr><td class="empty" colspan="5">${t().desiredAligned}</td></tr>`;
+
+  // 期望状态：对账 / 对齐
+  $("desiredTitle").textContent = t().desiredTitle;
+  $("desiredCheckBtn").textContent = t().desiredCheck;
+  $("desiredApplyBtn").textContent = t().desiredApply;
+  await loadDesired();
+
   // 已删除（可找回）
   const rt = $("marketRemovedTable").querySelector("tbody");
   rt.innerHTML = "";
@@ -780,6 +841,41 @@ async function loadMarket() {
     rt.appendChild(tr);
   }
   if (!res.removed.length) rt.innerHTML = `<tr><td class="empty" colspan="5">—</td></tr>`;
+}
+
+// 期望状态：对账结果（缺失 / 多余 / 状态要改）
+async function loadDesired() {
+  const out = $("desiredOut");
+  const st = $("desiredStatus");
+  if (!project) { out.textContent = ""; st.textContent = ""; return; }
+  const res = await apiGet("/api/plugins/desired", { path: project.path });
+  if (!res.ok) { out.textContent = res.error || ""; st.textContent = ""; return; }
+  if (!res.present) { out.textContent = t().desiredNone; st.textContent = ""; return; }
+  const d = res.diff || {};
+  const lines = [];
+  if ((d.missing || []).length) lines.push(t().desiredMissing + d.missing.map(w => w.id).join(", "));
+  if ((d.extra || []).length) lines.push(t().desiredExtra + d.extra.join(", "));
+  const stateChanges = [].concat(
+    (d.to_disable || []).map(id => "disable " + id),
+    (d.to_block || []).map(id => "block " + id),
+    (d.to_unblock || []).map(id => "unblock " + id),
+    (d.to_enable || []).map(id => "enable " + id),
+  );
+  if (stateChanges.length) lines.push(t().desiredState + stateChanges.join(", "));
+  for (const n of (d.notes || [])) lines.push("· " + n);
+  out.textContent = lines.length ? lines.join("\n") : "";
+  st.textContent = res.aligned ? t().desiredAligned : "";
+}
+
+async function reconcileDesired(dryRun) {
+  const r = await apiPost("/api/plugins/reconcile", { path: project.path, dry_run: dryRun });
+  if (!r.ok) { alert(r.error); return; }
+  const parts = [];
+  for (const a of (r.applied || [])) parts.push((dryRun ? "会 " : "✓ ") + a);
+  for (const i of (r.installed || [])) parts.push((dryRun ? "会装 " : "✓ 装好 ") + i.id);
+  for (const s of (r.skipped || [])) parts.push("! " + s);
+  $("desiredOut").textContent = parts.join("\n");
+  if (!dryRun) await loadDesired();
 }
 
 async function addMarket() {
@@ -815,6 +911,14 @@ async function setPluginState(id, action) {
 document.addEventListener("DOMContentLoaded", () => {
   $("marketAddBtn").onclick = addMarket;
   $("marketFromDirBtn").onclick = installFromDir;
+  $("desiredCheckBtn").onclick = async () => { await loadDesired(); };
+  $("desiredApplyBtn").onclick = async () => {
+    const r = await apiPost("/api/plugins/reconcile", { path: project ? project.path : "", dry_run: true });
+    if (!r.ok) { alert(r.error); return; }
+    const plan = [].concat(r.applied || [], (r.installed || []).map(i => "装 " + i.id));
+    if (!confirm((plan.join("\n") || "（没有要做的）") + "\n\n执行？")) return;
+    await reconcileDesired(false);
+  };
 });
 
 async function loadLog() {
