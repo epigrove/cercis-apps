@@ -244,6 +244,7 @@ pub fn handle(req: &Request) -> Response {
             match cercis_core::plugin::discover(path, crate::plugin_host::global_plugins_dir().as_deref()) {
                 Ok(found) => {
                     let trust = cercis_core::TrustRecord::load(path).unwrap_or_default();
+                    let pstate = cercis_core::plugin::PluginState::load(path).unwrap_or_default();
                     let list: Vec<Value> = found
                         .iter()
                         .map(|p| {
@@ -257,6 +258,11 @@ pub fn handle(req: &Request) -> Response {
                                 "origin": p.origin,
                                 "trusted": trusted,
                                 "runnable": runnable,
+                                "disabled": pstate.is_disabled(&p.manifest.id),
+                                "blocked": pstate.is_blocked(&p.manifest.id),
+                                "active": p.manifest.activation(path).active
+                                    && !pstate.is_disabled(&p.manifest.id),
+                                "inactive_reasons": p.manifest.activation(path).reasons,
                                 "permissions": p.manifest.permission_summary(),
                                 "can_write": p.manifest.permissions.write,
                                 "entrypoint": p.manifest.entrypoint,
@@ -434,6 +440,407 @@ pub fn handle(req: &Request) -> Response {
             }
         }
 
+        // ── 插件市场（D41–D43）────────────────────────────────────────────
+        // 分工：下载在 app（这里），校验/安装/记账在内核（cercis_core::market）。
+        "/api/market" => {
+            let global = crate::plugin_host::global_plugins_dir();
+            let user = global
+                .as_ref()
+                .and_then(|d| cercis_core::UserMarkets::load(d).ok())
+                .unwrap_or_default();
+            let markets: Vec<Value> = user
+                .effective()
+                .iter()
+                .map(|m| {
+                    // 缓存里的清单（下载过才有内容）；顺带列出"可装什么"
+                    let cached = crate::market_host::cached_listing(&m.id);
+                    let (cached_path, plugins) = match &cached {
+                        Some((dir, listing)) => (
+                            dir.display().to_string(),
+                            listing
+                                .plugins
+                                .iter()
+                                .map(|p| {
+                                    json!({
+                                        "id": p.id,
+                                        "name": if p.label_cn.is_empty() { &p.name } else { &p.label_cn },
+                                        "version": p.version,
+                                        "summary": p.summary,
+                                        "permissions": p.permissions,
+                                        "path": p.path,
+                                    })
+                                })
+                                .collect::<Vec<_>>(),
+                        ),
+                        None => (String::new(), Vec::new()),
+                    };
+                    json!({
+                        "id": m.id,
+                        "label": m.label_cn,
+                        "repository": m.repository,
+                        "ref": m.default_ref,
+                        "bundled": m.bundled,
+                        "removable": !m.bundled,
+                        "cached": !cached_path.is_empty(),
+                        "cache_path": cached_path,
+                        "plugins": plugins,
+                    })
+                })
+                .collect();
+            let installed: Vec<Value> = crate::market_host::installed()
+                .iter()
+                .map(|r| {
+                    json!({
+                        "id": r.id,
+                        "version": r.version,
+                        "market": r.market,
+                        "repository": r.repository,
+                        "ref": r.git_ref,
+                        "fingerprint": r.fingerprint,
+                        "bundled": r.bundled,
+                        "removable": !r.bundled,
+                        "installed_at": r.installed_at,
+                    })
+                })
+                .collect();
+            let removed: Vec<Value> = crate::market_host::removed()
+                .iter()
+                .map(|r| {
+                    json!({
+                        "id": r.id,
+                        "version": r.version,
+                        "market": r.market,
+                        "removed_at": r.removed_at,
+                        "note": r.note,
+                    })
+                })
+                .collect();
+            Response::json(
+                &json!({
+                    "ok": true,
+                    "global_dir": global.map(|d| d.display().to_string()),
+                    "markets": markets,
+                    "installed": installed,
+                    "removed": removed,
+                    "has_git": crate::market_host::has_git(),
+                })
+                .to_string(),
+            )
+        }
+
+        // 添加市场（私有仓库也走这里；凭据由系统的 git 凭据助手处理）
+        "/api/market/add" => {
+            if req.method != "POST" {
+                return Response::error(400, "POST only");
+            }
+            let body: Value = match serde_json::from_str(&req.body) {
+                Ok(v) => v,
+                Err(e) => return Response::error(400, &format!("JSON 解析失败: {e}")),
+            };
+            let repository = body
+                .get("repository")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            if repository.is_empty() {
+                return Response::error(400, lang.t("缺少仓库地址", "missing repository"));
+            }
+            let Some(global) = crate::plugin_host::global_plugins_dir() else {
+                return Response::error(500, "取不到用户插件目录");
+            };
+            let id = body
+                .get("id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| default_market_id(repository));
+            let mut user = match cercis_core::UserMarkets::load(&global) {
+                Ok(u) => u,
+                Err(e) => return Response::error(500, &e.to_string()),
+            };
+            user.add(cercis_core::market::MarketEntry {
+                id: id.clone(),
+                label_cn: body
+                    .get("label")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&id)
+                    .to_string(),
+                repository: repository.to_string(),
+                marketplace_path: body
+                    .get("marketplace_path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("marketplace.json")
+                    .to_string(),
+                default_ref: body
+                    .get("ref")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("main")
+                    .to_string(),
+                bundled: false,
+                added_at: cercis_core::ids::now_iso8601(),
+            });
+            match user.save(&global) {
+                Ok(()) => Response::json(&json!({ "ok": true, "id": id }).to_string()),
+                Err(e) => Response::error(500, &e.to_string()),
+            }
+        }
+
+        // 移除市场（随包的基础市场会被内核拒绝）
+        "/api/market/remove" => {
+            if req.method != "POST" {
+                return Response::error(400, "POST only");
+            }
+            let body: Value = match serde_json::from_str(&req.body) {
+                Ok(v) => v,
+                Err(e) => return Response::error(400, &format!("JSON 解析失败: {e}")),
+            };
+            let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let Some(global) = crate::plugin_host::global_plugins_dir() else {
+                return Response::error(500, "取不到用户插件目录");
+            };
+            let mut user = match cercis_core::UserMarkets::load(&global) {
+                Ok(u) => u,
+                Err(e) => return Response::error(500, &e.to_string()),
+            };
+            match user.remove(id) {
+                Ok(msg) => match user.save(&global) {
+                    Ok(()) => Response::json(&json!({ "ok": true, "message": msg }).to_string()),
+                    Err(e) => Response::error(500, &e.to_string()),
+                },
+                Err(e) => Response::error(400, &e.to_string()),
+            }
+        }
+
+        // 下载 / 刷新市场清单（**只有这里会联网**）
+        "/api/market/refresh" => {
+            if req.method != "POST" {
+                return Response::error(400, "POST only");
+            }
+            let body: Value = match serde_json::from_str(&req.body) {
+                Ok(v) => v,
+                Err(e) => return Response::error(400, &format!("JSON 解析失败: {e}")),
+            };
+            let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let Some(global) = crate::plugin_host::global_plugins_dir() else {
+                return Response::error(500, "取不到用户插件目录");
+            };
+            let user = match cercis_core::UserMarkets::load(&global) {
+                Ok(u) => u,
+                Err(e) => return Response::error(500, &e.to_string()),
+            };
+            let Some(entry) = user.effective().into_iter().find(|m| m.id == id) else {
+                return Response::error(404, &format!("没有这个市场：{id}"));
+            };
+            let git_ref = body
+                .get("ref")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&entry.default_ref);
+            match crate::market_host::download(&entry.repository, git_ref, &entry.id) {
+                Ok(dir) => match crate::market_host::load_listing(&dir) {
+                    Ok(listing) => Response::json(
+                        &json!({
+                            "ok": true,
+                            "id": entry.id,
+                            "cache_path": dir.display().to_string(),
+                            "name": listing.name,
+                            "label": listing.label_cn,
+                            "bundled": listing.bundled,
+                            "plugins": listing.plugins.iter().map(|p| json!({
+                                "id": p.id,
+                                "name": if p.label_cn.is_empty() { &p.name } else { &p.label_cn },
+                                "version": p.version,
+                                "summary": p.summary,
+                                "permissions": p.permissions,
+                            })).collect::<Vec<_>>(),
+                        })
+                        .to_string(),
+                    ),
+                    Err(e) => Response::error(500, &e),
+                },
+                Err(e) => Response::error(500, &e),
+            }
+        }
+
+        // 安装：缓存里没有就先下载，然后交给内核那一段
+        "/api/market/install" => {
+            if req.method != "POST" {
+                return Response::error(400, "POST only");
+            }
+            let body: Value = match serde_json::from_str(&req.body) {
+                Ok(v) => v,
+                Err(e) => return Response::error(400, &format!("JSON 解析失败: {e}")),
+            };
+            let plugin = body.get("plugin").and_then(|v| v.as_str()).unwrap_or("");
+            if plugin.is_empty() {
+                return Response::error(400, lang.t("缺少 plugin", "missing plugin"));
+            }
+            // 本地目录优先（手动下载 / 拖入插件包这条路）
+            let dir = match body.get("from").and_then(|v| v.as_str()) {
+                Some(d) if !d.trim().is_empty() => std::path::PathBuf::from(d),
+                _ => {
+                    let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                    let Some(global) = crate::plugin_host::global_plugins_dir() else {
+                        return Response::error(500, "取不到用户插件目录");
+                    };
+                    let user = match cercis_core::UserMarkets::load(&global) {
+                        Ok(u) => u,
+                        Err(e) => return Response::error(500, &e.to_string()),
+                    };
+                    let Some(entry) = user.effective().into_iter().find(|m| m.id == id) else {
+                        return Response::error(404, &format!("没有这个市场：{id}"));
+                    };
+                    let git_ref = body
+                        .get("ref")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(&entry.default_ref);
+                    let cached = crate::market_host::cached_listing(&entry.id).map(|(d, _)| d);
+                    match cached {
+                        Some(d) => d,
+                        None => match crate::market_host::download(&entry.repository, git_ref, &entry.id)
+                        {
+                            Ok(d) => d,
+                            Err(e) => return Response::error(500, &e),
+                        },
+                    }
+                }
+            };
+            let market_id = body.get("id").and_then(|v| v.as_str()).unwrap_or("local");
+            let git_ref = body.get("ref").and_then(|v| v.as_str()).unwrap_or("");
+            match crate::market_host::install_from(&dir, plugin, market_id, git_ref) {
+                Ok((record, dest)) => Response::json(
+                    &json!({
+                        "ok": true,
+                        "id": record.id,
+                        "version": record.version,
+                        "path": dest.display().to_string(),
+                        "fingerprint": record.fingerprint,
+                        "bundled": record.bundled,
+                    })
+                    .to_string(),
+                ),
+                Err(e) => Response::error(400, &e),
+            }
+        }
+
+        // 删除（随包的基础插件会被内核拒绝，并给出停用/屏蔽的指引）
+        "/api/market/uninstall" => {
+            if req.method != "POST" {
+                return Response::error(400, "POST only");
+            }
+            let body: Value = match serde_json::from_str(&req.body) {
+                Ok(v) => v,
+                Err(e) => return Response::error(400, &format!("JSON 解析失败: {e}")),
+            };
+            let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let note = body.get("note").and_then(|v| v.as_str()).unwrap_or("");
+            match crate::market_host::uninstall(id, note) {
+                Ok(message) => {
+                    Response::json(&json!({ "ok": true, "message": message }).to_string())
+                }
+                Err(e) => Response::error(400, &e),
+            }
+        }
+
+        // 找回被删掉的插件
+        "/api/market/restore" => {
+            if req.method != "POST" {
+                return Response::error(400, "POST only");
+            }
+            let body: Value = match serde_json::from_str(&req.body) {
+                Ok(v) => v,
+                Err(e) => return Response::error(400, &format!("JSON 解析失败: {e}")),
+            };
+            let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let from = body
+                .get("from")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty())
+                .map(std::path::PathBuf::from);
+            match crate::market_host::restore(id, from.as_deref()) {
+                Ok(message) => {
+                    Response::json(&json!({ "ok": true, "message": message }).to_string())
+                }
+                Err(e) => Response::error(400, &e),
+            }
+        }
+
+        // 停用 / 启用 / 屏蔽 / 取消屏蔽（项目级；都写流水）
+        "/api/plugin/state" => {
+            if req.method != "POST" {
+                return Response::error(400, "POST only");
+            }
+            let body: Value = match serde_json::from_str(&req.body) {
+                Ok(v) => v,
+                Err(e) => return Response::error(400, &format!("JSON 解析失败: {e}")),
+            };
+            let path = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let action = body.get("action").and_then(|v| v.as_str()).unwrap_or("");
+            if path.is_empty() || id.is_empty() {
+                return Response::error(400, lang.t("缺少 path 或 id", "missing path or id"));
+            }
+            let p = match Project::open(path, None) {
+                Ok(p) => p,
+                Err(e) => return Response::error(500, &e.to_string()),
+            };
+            let mut state = match cercis_core::plugin::PluginState::load(path) {
+                Ok(s) => s,
+                Err(e) => return Response::error(500, &e.to_string()),
+            };
+            let (verb, summary) = match action {
+                "disable" => {
+                    state.disable(id);
+                    ("disable", format!("停用插件 {id}"))
+                }
+                "enable" => {
+                    state.enable(id);
+                    ("enable", format!("启用插件 {id}"))
+                }
+                "block" => {
+                    state.block(id);
+                    ("block", format!("屏蔽插件 {id}（不加载、界面不出现、命令不执行）"))
+                }
+                "unblock" => {
+                    state.unblock(id);
+                    ("unblock", format!("取消屏蔽插件 {id}"))
+                }
+                _ => {
+                    return Response::error(
+                        400,
+                        lang.t(
+                            "action 只能是 disable/enable/block/unblock",
+                            "action must be disable/enable/block/unblock",
+                        ),
+                    )
+                }
+            };
+            if let Err(e) = state.save(path) {
+                return Response::error(500, &e.to_string());
+            }
+            let _ = p.store.append_change(&cercis_core::history::ChangeEntry::new(
+                &p.store.identity.user_id,
+                &p.store.identity.device_for_log(),
+                verb,
+                "plugin",
+                id,
+                &summary,
+                "",
+                "",
+            ));
+            Response::json(&json!({ "ok": true, "action": verb, "id": id }).to_string())
+        }
+
         _ => Response::error(404, "unknown endpoint"),
     }
+}
+
+/// 从仓库地址推一个市场 id（`.../cercis-kits-research.git` → `cercis-kits-research`）。
+fn default_market_id(repository: &str) -> String {
+    repository
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or("market")
+        .trim_end_matches(".git")
+        .to_string()
 }

@@ -39,6 +39,13 @@
   th, td { border-bottom: 1px solid var(--line); padding: 7px 9px; text-align: left; vertical-align: top; }
   th { background: #f6f3ef; font-weight: 600; position: sticky; top: 0; }
   .tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+  /* 插件市场/插件列表：动作列不换行，按钮横排（否则中文按钮会被挤成一竖排） */
+  #marketTable td:last-child, #marketInstalledTable td:last-child,
+  #marketRemovedTable td:last-child, #pluginsTable td:last-child { white-space: nowrap; }
+  #marketTable button, #marketInstalledTable button, #marketRemovedTable button,
+  #pluginsTable button { margin-left: 6px; white-space: nowrap; }
+  #marketTable th:last-child, #marketInstalledTable th:last-child { min-width: 260px; }
+  #pluginsTable th:last-child { min-width: 200px; }
   .tab { padding: 6px 12px; border: 1px solid var(--line); border-radius: 999px; background: #fff; cursor: pointer; font-size: 13.5px; }
   .tab.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
   .tag { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; background: var(--accent-soft); color: var(--accent); }
@@ -109,6 +116,37 @@
     </thead><tbody></tbody></table></div>
   </div>
 
+  <div class="card" id="marketCard" style="display:none;">
+    <h2 id="marketTitle"></h2>
+    <p class="muted" id="marketNote"></p>
+
+    <div class="row" style="margin-top:10px;">
+      <input id="marketRepo" placeholder="" style="width:330px" />
+      <input id="marketLabel" placeholder="" style="width:170px" />
+      <input id="marketRef" placeholder="" style="width:130px" />
+      <button id="marketAddBtn" class="primary"></button>
+      <input id="marketFromDir" placeholder="" style="width:300px" />
+      <button id="marketFromDirBtn"></button>
+    </div>
+    <div class="muted" id="marketGitNote" style="margin-top:6px; display:none;"></div>
+
+    <div class="scroll" style="margin-top:12px;">
+      <table id="marketTable"><thead>
+        <tr><th>市场</th><th>仓库</th><th>状态</th><th>可安装</th><th></th></tr>
+      </thead><tbody></tbody></table>
+    </div>
+
+    <h2 style="margin-top:16px; font-size:15px;" id="marketInstalledTitle"></h2>
+    <div class="scroll"><table id="marketInstalledTable"><thead>
+      <tr><th>插件</th><th>版本</th><th>来源</th><th>指纹</th><th></th></tr>
+    </thead><tbody></tbody></table></div>
+
+    <h2 style="margin-top:16px; font-size:15px;" id="marketRemovedTitle"></h2>
+    <div class="scroll"><table id="marketRemovedTable"><thead>
+      <tr><th>插件</th><th>版本</th><th>删除时间</th><th>理由</th><th></th></tr>
+    </thead><tbody></tbody></table></div>
+  </div>
+
   <div class="card" id="logCard" style="display:none;">
     <h2>变更流水</h2>
     <div class="scroll"><table id="logTable"><thead>
@@ -161,7 +199,7 @@ const I18N = {
   zh: {
     slogan: "愿瑟希斯捍卫你的思想。",
     open: "打开项目", placeholder: "项目文件夹路径",
-    tabs: { data: "数据", plugins: "插件", log: "变更流水", tools: "工具", todos: "待办" },
+    tabs: { data: "数据", plugins: "插件", market: "插件市场", log: "变更流水", tools: "工具", todos: "待办" },
     rows: "行", refresh: "刷新", filterPh: "筛选：列:运算符:值（如 value_num:gt:20）",
     trust: "信任并启用", revoke: "撤销信任", trusted: "已信任", untrusted: "未信任",
     validate: "校验项目", agents: "刷新 AI 材料（AGENTS.md）", manifest: "生成机器清单",
@@ -175,11 +213,38 @@ const I18N = {
     wizardPath: "新项目文件夹路径（如 ./我的项目）", wizardName: "项目名称", create: "创建项目",
     welcome: "在右上角输入一个 Cercis 项目文件夹的路径，然后点「打开项目」。",
     noRows: "没有数据。",
+    // 插件市场（D41–D43）
+    marketTitle: "插件市场",
+    marketNote: "市场是 Cercis 管理插件的方式：来源、版本、装卸都在这里。基础工具包随 app 交付（市场条目不可移除，插件不可删除，只能停用/屏蔽）；科研工具包只是预添加，插件默认不装、装了可以删。",
+    marketAddTitle: "添加市场（自建 / 私有仓库）",
+    marketRepoPh: "git 仓库地址（如 https://github.com/组织/仓库）",
+    marketLabelPh: "显示名（可选）",
+    marketRefPh: "分支/标签（默认 main）",
+    marketAdd: "添加",
+    marketRefresh: "下载/刷新清单",
+    marketRemove: "移除市场",
+    marketBundled: "随包交付",
+    marketRemovable: "可移除",
+    marketNotDownloaded: "还没下载清单（点「下载/刷新清单」）",
+    marketDownloaded: "清单已就绪",
+    marketInstall: "安装",
+    marketPlugins: "可安装的插件",
+    marketInstalled: "已装（来自市场）",
+    marketRemovedTitle: "已删除（升级不会装回来）",
+    marketRestore: "找回",
+    marketUninstall: "删除",
+    marketNeedGit: "这台机器上没有 git：请手动下载仓库后用「从本地目录安装」（命令行：cercis market install --from <目录> --plugin <id>）。",
+    marketFromDirPh: "本地目录（手动下载的仓库，或拖入的插件包）",
+    marketInstallFrom: "从本地目录安装",
+    pluginDisable: "停用", pluginEnable: "启用",
+    pluginBlock: "屏蔽", pluginUnblock: "取消屏蔽",
+    pluginDisabled: "已停用", pluginBlocked: "已屏蔽（界面不出现）",
+    pluginInactive: "已装未生效",
   },
   en: {
     slogan: "May Cerces safeguard your thoughts.",
     open: "Open project", placeholder: "Project folder path",
-    tabs: { data: "Data", plugins: "Plugins", log: "Change log", tools: "Tools", todos: "To-dos" },
+    tabs: { data: "Data", plugins: "Plugins", market: "Market", log: "Change log", tools: "Tools", todos: "To-dos" },
     rows: "rows", refresh: "Refresh", filterPh: "Filter: col:op:value (e.g. value_num:gt:20)",
     trust: "Trust & enable", revoke: "Revoke", trusted: "trusted", untrusted: "untrusted",
     validate: "Validate project", agents: "Refresh AI files (AGENTS.md)", manifest: "Generate manifest",
@@ -193,6 +258,32 @@ const I18N = {
     wizardPath: "New project folder path", wizardName: "Project name", create: "Create project",
     welcome: "Enter the path of a Cercis project folder and click \"Open project\".",
     noRows: "No data.",
+    marketTitle: "Plugin market",
+    marketNote: "The market is how Cercis manages plugins: source, version, install/uninstall all live here. The basic kit ships with the app (its market entry cannot be removed, its plugins cannot be deleted — disable or block them instead); the research kit is only pre-added: nothing is installed by default, and installed plugins can be deleted.",
+    marketAddTitle: "Add a market (self-hosted / private repo)",
+    marketRepoPh: "git repository URL",
+    marketLabelPh: "Display name (optional)",
+    marketRefPh: "Branch/tag (default main)",
+    marketAdd: "Add",
+    marketRefresh: "Download / refresh listing",
+    marketRemove: "Remove market",
+    marketBundled: "bundled",
+    marketRemovable: "removable",
+    marketNotDownloaded: "Listing not downloaded yet",
+    marketDownloaded: "Listing ready",
+    marketInstall: "Install",
+    marketPlugins: "Installable plugins",
+    marketInstalled: "Installed (from market)",
+    marketRemovedTitle: "Deleted (upgrades will not bring them back)",
+    marketRestore: "Restore",
+    marketUninstall: "Delete",
+    marketNeedGit: "git is not available: download the repo manually, then use \"install from local folder\" (CLI: cercis market install --from <dir> --plugin <id>).",
+    marketFromDirPh: "Local folder (manually downloaded repo or dragged-in plugin package)",
+    marketInstallFrom: "Install from folder",
+    pluginDisable: "Disable", pluginEnable: "Enable",
+    pluginBlock: "Block", pluginUnblock: "Unblock",
+    pluginDisabled: "disabled", pluginBlocked: "blocked (hidden)",
+    pluginInactive: "installed, not active",
   }
 };
 let lang = "zh";
@@ -439,7 +530,7 @@ async function createProject() {
 let currentTab = "data";
 function renderTabs() {
   const tabs = [
-    ["data", t().tabs.data], ["plugins", t().tabs.plugins],
+    ["data", t().tabs.data], ["plugins", t().tabs.plugins], ["market", t().tabs.market],
     ["log", t().tabs.log], ["tools", t().tabs.tools], ["todos", t().tabs.todos]
   ];
   const el = $("tabs");
@@ -456,11 +547,13 @@ function renderTabs() {
 function loadActiveTab() {
   show("dataCard", currentTab === "data");
   show("pluginsCard", currentTab === "plugins");
+  show("marketCard", currentTab === "market");
   show("logCard", currentTab === "log");
   show("toolsCard", currentTab === "tools");
   show("todosCard", currentTab === "todos");
   if (currentTab === "data") loadTables();
   if (currentTab === "plugins") loadPlugins();
+  if (currentTab === "market") loadMarket();
   if (currentTab === "log") loadLog();
 }
 
@@ -524,13 +617,19 @@ async function loadPlugins() {
     const ext = (p.ui_extensions || []).map(u => `<span class="tag">${u.kind}: ${u.label||u.id}</span>`).join(" ")
       + ((p.commands || []).length ? "<br>" + p.commands.map(c =>
           `<span class="tag ${c.enabled ? "ok" : "warn"}">▶ ${c.label} <span class="muted">(${c.command||"默认"})</span></span>`).join(" ") : "");
-    const status = p.origin === "global"
+    let status = p.origin === "global"
       ? `<span class="tag ok">${t().global}</span>`
       : (p.trusted ? `<span class="tag ok">${t().trusted}</span>` : `<span class="tag warn">${t().untrusted}</span>`);
+    if (p.blocked) status += ` <span class="tag warn">${t().pluginBlocked}</span>`;
+    else if (p.disabled) status += ` <span class="tag warn">${t().pluginDisabled}</span>`;
+    else if (!p.active && (p.inactive_reasons||[]).length) {
+      status += ` <span class="tag warn">${t().pluginInactive}：${(p.inactive_reasons||[]).join("；")}</span>`;
+    }
     tr.innerHTML = `<td>${p.name}<br><span class="muted">${p.id}</span></td>
       <td>${p.origin}</td><td>${p.permissions}</td><td>${ext||"<span class=muted>—</span>"}</td>
       <td>${status}${p.runnable ? "" : '<br><span class="muted">'+t().notRunnable+"</span>"}</td>
       <td></td>`;
+    const cell = tr.lastElementChild;
     const btn = document.createElement("button");
     btn.textContent = p.trusted ? t().revoke : t().trust;
     btn.onclick = async () => {
@@ -539,11 +638,184 @@ async function loadPlugins() {
       await loadPlugins();
       renderPluginActions();
     };
-    tr.lastElementChild.appendChild(btn);
+    cell.appendChild(btn);
+
+    // 停用 / 启用（不加载，但仍列出来）
+    const dis = document.createElement("button");
+    dis.style.marginLeft = "6px";
+    dis.textContent = p.disabled ? t().pluginEnable : t().pluginDisable;
+    dis.onclick = () => setPluginState(p.id, p.disabled ? "enable" : "disable");
+    cell.appendChild(dis);
+
+    // 屏蔽 / 取消屏蔽（不加载、界面不出现、命令不执行；基础插件的最强手段）
+    const blk = document.createElement("button");
+    blk.style.marginLeft = "6px";
+    blk.textContent = p.blocked ? t().pluginUnblock : t().pluginBlock;
+    blk.onclick = () => setPluginState(p.id, p.blocked ? "unblock" : "block");
+    cell.appendChild(blk);
+
     tbody.appendChild(tr);
   }
   renderPluginActions();
 }
+
+
+// ── 插件市场（D41–D43）───────────────────────────────────────────────
+// 分工：下载在这里（app 联网），校验/安装/记账在内核那一段（/api/market/*）。
+async function loadMarket() {
+  $("marketTitle").textContent = t().marketTitle;
+  $("marketNote").textContent = t().marketNote;
+  $("marketRepo").placeholder = t().marketRepoPh;
+  $("marketLabel").placeholder = t().marketLabelPh;
+  $("marketRef").placeholder = t().marketRefPh;
+  $("marketAddBtn").textContent = t().marketAdd;
+  $("marketFromDir").placeholder = t().marketFromDirPh;
+  $("marketFromDirBtn").textContent = t().marketInstallFrom;
+  $("marketInstalledTitle").textContent = t().marketInstalled;
+  $("marketRemovedTitle").textContent = t().marketRemovedTitle;
+
+  const res = await apiGet("/api/market");
+  const tbody = $("marketTable").querySelector("tbody");
+  tbody.innerHTML = "";
+  if (!res.ok) { tbody.innerHTML = `<tr><td class="empty" colspan="5">${res.error||""}</td></tr>`; return; }
+  $("marketGitNote").style.display = res.has_git ? "none" : "block";
+  if (!res.has_git) $("marketGitNote").textContent = t().marketNeedGit;
+
+  for (const m of res.markets) {
+    const tr = document.createElement("tr");
+    const tags = [
+      m.bundled ? `<span class="tag">${t().marketBundled}</span>` : "",
+      m.removable ? `<span class="tag ok">${t().marketRemovable}</span>` : "",
+      m.cached ? `<span class="tag ok">${t().marketDownloaded}</span>` : `<span class="tag warn">${t().marketNotDownloaded}</span>`,
+    ].join(" ");
+    tr.innerHTML = `<td>${m.label||m.id}<br><span class="muted">${m.id}</span></td>
+      <td><span class="muted">${m.repository}</span>${m.ref?`<br><span class="muted">${m.ref}</span>`:""}</td>
+      <td>${tags}</td>
+      <td>${(m.plugins||[]).map(p => `<div>${p.name} <span class="muted">v${p.version}</span></div>`).join("") || "<span class=muted>—</span>"}</td>
+      <td></td>`;
+    const actions = tr.lastElementChild;
+
+    const refresh = document.createElement("button");
+    refresh.textContent = t().marketRefresh;
+    refresh.onclick = async () => {
+      refresh.disabled = true;
+      const r = await apiPost("/api/market/refresh", { id: m.id, ref: m.ref });
+      refresh.disabled = false;
+      if (!r.ok) alert(r.error); else await loadMarket();
+    };
+    actions.appendChild(refresh);
+
+    if (m.removable) {
+      const remove = document.createElement("button");
+      remove.textContent = t().marketRemove;
+      remove.style.marginLeft = "6px";
+      remove.onclick = async () => {
+        if (!confirm(t().marketRemove + "? " + m.id)) return;
+        const r = await apiPost("/api/market/remove", { id: m.id });
+        if (!r.ok) alert(r.error); else await loadMarket();
+      };
+      actions.appendChild(remove);
+    }
+
+    // 每个可装插件一个"安装"按钮（清单没下载时先刷新）
+    for (const p of (m.plugins || [])) {
+      const install = document.createElement("button");
+      install.className = "primary";
+      install.style.marginLeft = "6px";
+      install.textContent = `${t().marketInstall} ${p.name}`;
+      install.onclick = async () => {
+        install.disabled = true;
+        const r = await apiPost("/api/market/install", { id: m.id, plugin: p.id, ref: m.ref });
+        install.disabled = false;
+        if (!r.ok) alert(r.error);
+        else { alert(`${r.id} v${r.version}\n${r.path}\n${r.fingerprint}`); await loadMarket(); }
+      };
+      actions.appendChild(install);
+    }
+    tbody.appendChild(tr);
+  }
+  if (!res.markets.length) tbody.innerHTML = `<tr><td class="empty" colspan="5">—</td></tr>`;
+
+  // 已装
+  const it = $("marketInstalledTable").querySelector("tbody");
+  it.innerHTML = "";
+  for (const r of res.installed) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${r.id}${r.bundled?` <span class="tag">${t().marketBundled}</span>`:""}</td>
+      <td>${r.version||""}</td>
+      <td><span class="muted">${r.repository||r.market||""}</span></td>
+      <td><span class="muted">${(r.fingerprint||"").slice(0,12)}</span></td><td></td>`;
+    const actions = tr.lastElementChild;
+    if (r.bundled) {
+      // 随包插件：不删除，只给停用/屏蔽（D43）
+      actions.innerHTML = `<span class="muted">${t().pluginDisable} / ${t().pluginBlock}</span>`;
+    } else {
+      const del = document.createElement("button");
+      del.textContent = t().marketUninstall;
+      del.onclick = async () => {
+        if (!confirm(`${t().marketUninstall} ${r.id}?`)) return;
+        const x = await apiPost("/api/market/uninstall", { id: r.id });
+        if (!x.ok) alert(x.error); else await loadMarket();
+      };
+      actions.appendChild(del);
+    }
+    it.appendChild(tr);
+  }
+  if (!res.installed.length) it.innerHTML = `<tr><td class="empty" colspan="5">—</td></tr>`;
+
+  // 已删除（可找回）
+  const rt = $("marketRemovedTable").querySelector("tbody");
+  rt.innerHTML = "";
+  for (const r of res.removed) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${r.id}</td><td>${r.version||""}</td>
+      <td><span class="muted">${r.removed_at||""}</span></td><td>${r.note||""}</td><td></td>`;
+    const back = document.createElement("button");
+    back.textContent = t().marketRestore;
+    back.onclick = async () => {
+      const x = await apiPost("/api/market/restore", { id: r.id });
+      if (!x.ok) alert(x.error); else { alert(x.message); await loadMarket(); }
+    };
+    tr.lastElementChild.appendChild(back);
+    rt.appendChild(tr);
+  }
+  if (!res.removed.length) rt.innerHTML = `<tr><td class="empty" colspan="5">—</td></tr>`;
+}
+
+async function addMarket() {
+  const repository = $("marketRepo").value.trim();
+  if (!repository) return;
+  const r = await apiPost("/api/market/add", {
+    repository,
+    label: $("marketLabel").value.trim(),
+    ref: $("marketRef").value.trim() || "main",
+  });
+  if (!r.ok) alert(r.error);
+  else { $("marketRepo").value = ""; $("marketLabel").value = ""; await loadMarket(); }
+}
+
+async function installFromDir() {
+  const dir = $("marketFromDir").value.trim();
+  if (!dir) return;
+  const plugin = prompt("plugin id（如 research_scribe）");
+  if (!plugin) return;
+  const r = await apiPost("/api/market/install", { from: dir, plugin, id: "local" });
+  if (!r.ok) alert(r.error);
+  else { alert(`${r.id} v${r.version}\n${r.path}`); await loadMarket(); }
+}
+
+// 停用 / 启用 / 屏蔽 / 取消屏蔽：项目级状态，写进 change_log
+async function setPluginState(id, action) {
+  if (!project) return;
+  const r = await apiPost("/api/plugin/state", { path: project.path, id, action });
+  if (!r.ok) alert(r.error);
+  else { await loadPlugins(); await loadMarket(); }
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  $("marketAddBtn").onclick = addMarket;
+  $("marketFromDirBtn").onclick = installFromDir;
+});
 
 async function loadLog() {
   const res = await apiGet("/api/log", { path: project.path, limit: 50 });

@@ -11,6 +11,7 @@
 
 mod api;
 mod http;
+mod market_host;
 mod plugin_host;
 mod web;
 

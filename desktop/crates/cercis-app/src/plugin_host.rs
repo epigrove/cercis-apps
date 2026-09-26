@@ -127,14 +127,19 @@ pub fn kernel_cli() -> Option<PathBuf> {
 /// 顺序：`CERCIS_PLUGINS` 环境变量 → `~/.cercis/plugins`。
 /// 全局插件是用户自己装的，视为已安装即可运行；项目内插件则必须先被信任。
 pub fn global_plugins_dir() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("CERCIS_PLUGINS") {
-        let p = PathBuf::from(p);
-        if p.is_dir() {
-            return Some(p);
+    // 环境变量优先（与内核 CLI 的 `--global-dir` / `CERCIS_GLOBAL_PLUGINS` 对齐；
+    // 旧的 CERCIS_PLUGINS 继续认，避免破坏已有用法）
+    for key in ["CERCIS_GLOBAL_PLUGINS", "CERCIS_PLUGINS"] {
+        if let Some(p) = std::env::var_os(key) {
+            let p = PathBuf::from(p);
+            if p.is_dir() {
+                return Some(p);
+            }
         }
     }
     let home = std::env::var_os("HOME")?;
     let dir = PathBuf::from(home).join(".cercis").join("plugins");
+    // 装插件时才创建：这里只"发现"，没有目录就返回 None（与既有行为一致）
     dir.is_dir().then_some(dir)
 }
 
@@ -240,6 +245,8 @@ mod tests {
         DiscoveredPlugin {
             manifest: PluginManifest {
                 id: "health_check".into(),
+                namespace: String::new(),
+                requires: Default::default(),
                 name: "Health Check".into(),
                 label_cn: "通用体检".into(),
                 version: "0.1.0".into(),
