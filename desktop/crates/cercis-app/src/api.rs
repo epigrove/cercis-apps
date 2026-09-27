@@ -361,6 +361,421 @@ pub fn handle(req: &Request) -> Response {
             }
         }
 
+        // 搬运：打包带走（S12）——全量/增量/分卷，加密区域保持密文
+        "/api/pack" => {
+            if req.method != "POST" {
+                return Response::error(400, "POST only");
+            }
+            let body: Value = match serde_json::from_str(&req.body) {
+                Ok(v) => v,
+                Err(e) => return Response::error(400, &format!("body 不是 JSON：{e}")),
+            };
+            let path = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let out = body.get("out").and_then(|v| v.as_str()).unwrap_or("");
+            if path.is_empty() || out.is_empty() {
+                return Response::error(
+                    400,
+                    lang.t("需要 path 与 out", "path and out are required"),
+                );
+            }
+            let opts = cercis_core::PackOptions {
+                part_size: body
+                    .get("part_size_mb")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(20)
+                    * 1024
+                    * 1024,
+                since: body
+                    .get("since")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                    .map(std::path::PathBuf::from),
+                include_history: !body
+                    .get("no_history")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                with_checkpoints: body
+                    .get("with_checkpoints")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                dry_run: body
+                    .get("dry_run")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+            };
+            let out_path = std::path::PathBuf::from(out);
+            if !opts.dry_run {
+                if let Err(e) = std::fs::create_dir_all(&out_path) {
+                    return Response::error(400, &format!("建不了输出目录：{e}"));
+                }
+            }
+            match cercis_core::pack::pack(std::path::Path::new(path), &out_path, &opts) {
+                Ok(rep) => Response::json(
+                    &json!({
+                        "ok": true,
+                        "dry_run": rep.dry_run,
+                        "out": rep.out,
+                        "parts": rep.parts,
+                        "files": rep.files,
+                        "bytes": rep.bytes,
+                        "skipped_unchanged": rep.skipped_unchanged,
+                        "removed": rep.removed,
+                        "notes": rep.notes,
+                        "manifest": rep.manifest,
+                    })
+                    .to_string(),
+                ),
+                Err(e) => Response::error(400, &e.to_string()),
+            }
+        }
+
+        // 搬运：合并一个包（S12）——先校验，再并集；冲突留双方副本
+        "/api/merge" => {
+            if req.method != "POST" {
+                return Response::error(400, "POST only");
+            }
+            let body: Value = match serde_json::from_str(&req.body) {
+                Ok(v) => v,
+                Err(e) => return Response::error(400, &format!("body 不是 JSON：{e}")),
+            };
+            let pack = body.get("pack").and_then(|v| v.as_str()).unwrap_or("");
+            let into = body.get("into").and_then(|v| v.as_str()).unwrap_or("");
+            if pack.is_empty() || into.is_empty() {
+                return Response::error(
+                    400,
+                    lang.t("需要 pack 与 into", "pack and into are required"),
+                );
+            }
+            let opts = cercis_core::pack::MergeOptions {
+                dry_run: body
+                    .get("dry_run")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                member: body
+                    .get("member")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                    .map(|s| s.to_string()),
+            };
+            match cercis_core::pack::merge(
+                std::path::Path::new(pack),
+                std::path::Path::new(into),
+                &opts,
+            ) {
+                Ok(rep) => Response::json(
+                    &json!({
+                        "ok": true,
+                        "dry_run": rep.dry_run,
+                        "summary": rep.summary(),
+                        "verified": rep.verified,
+                        "added": rep.added,
+                        "merged": rep.merged,
+                        "conflicts": rep.conflicts,
+                        "unchanged": rep.unchanged,
+                        "refused": rep.refused,
+                        "removed_reported": rep.removed_reported,
+                        "report_path": rep.report_path,
+                        "notes": rep.notes,
+                        "project_name": rep.project_name,
+                    })
+                    .to_string(),
+                ),
+                Err(e) => Response::error(400, &e.to_string()),
+            }
+        }
+
+        // 搬运：列合并报告（项目 _labnote/ 下的 merge-report-*.md/.json）
+        // 共存体检（S13 / FR-I06）：云盘 / Git 目录里的分叉风险
+        "/api/sync" => {
+            let Some(path) = req.query.get("path") else {
+                return Response::error(400, lang.t("缺少 path 参数", "missing path parameter"));
+            };
+            match cercis_core::sync::check(std::path::Path::new(path)) {
+                Ok(rep) => Response::json(
+                    &json!({
+                        "ok": rep.verdict != "needs-merge",
+                        "verdict": rep.verdict,
+                        "cloud": rep.cloud,
+                        "git": rep.git,
+                        "findings": rep.findings,
+                        "notes": rep.notes,
+                        "summary": rep.summary(),
+                    })
+                    .to_string(),
+                ),
+                Err(e) => Response::error(400, &e.to_string()),
+            }
+        }
+
+        // 搬运：列合并报告（项目 _labnote/ 下的 merge-report-*.md/.json）
+        "/api/reports" => {
+            let Some(path) = req.query.get("path") else {
+                return Response::error(400, lang.t("缺少 path 参数", "missing path parameter"));
+            };
+            let dir = std::path::Path::new(path).join("_labnote");
+            let mut out = Vec::new();
+            if let Ok(rd) = std::fs::read_dir(&dir) {
+                for e in rd.flatten() {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    if !name.starts_with("merge-report-") || !name.ends_with(".md") {
+                        continue;
+                    }
+                    let meta = e.metadata().ok();
+                    let mtime_unix = meta
+                        .as_ref()
+                        .and_then(|m| m.modified().ok())
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    out.push(json!({
+                        "name": name,
+                        "bytes": meta.as_ref().map(|m| m.len()).unwrap_or(0),
+                        "mtime_unix": mtime_unix,
+                    }));
+                }
+            }
+            out.sort_by(|a, b| b["name"].as_str().cmp(&a["name"].as_str()));
+            Response::json(&json!({ "ok": true, "reports": out }).to_string())
+        }
+
+        // 搬运：读一份报告（只允许读项目 _labnote/ 下的 md/json）
+        "/api/report" => {
+            let Some(path) = req.query.get("path") else {
+                return Response::error(400, lang.t("缺少 path 参数", "missing path parameter"));
+            };
+            let Some(file) = req.query.get("file") else {
+                return Response::error(400, lang.t("缺少 file 参数", "missing file parameter"));
+            };
+            // 防目录穿越：只认文件名，且必须是 md/json
+            if file.contains('/') || file.contains("..") || !(file.ends_with(".md") || file.ends_with(".json")) {
+                return Response::error(400, lang.t("只允许读 _labnote 下的报告", "only reports are allowed"));
+            }
+            let p = std::path::Path::new(path).join("_labnote").join(file);
+            match std::fs::read_to_string(&p) {
+                Ok(text) => Response::json(
+                    &json!({ "ok": true, "file": file, "text": text }).to_string(),
+                ),
+                Err(e) => Response::error(404, &format!("读不了：{e}")),
+            }
+        }
+
+        // 加密区域管理：建成员 / 建区域 / 授权 / 移除（S13 表单用；口令只在一次请求里用）
+        "/api/access/member" => {
+            if req.method != "POST" {
+                return Response::error(400, "POST only");
+            }
+            let body: Value = match serde_json::from_str(&req.body) {
+                Ok(v) => v,
+                Err(e) => return Response::error(400, &format!("body 不是 JSON：{e}")),
+            };
+            let path = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let name = body.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let password = body.get("password").and_then(|v| v.as_str()).unwrap_or("");
+            let note = body.get("note").and_then(|v| v.as_str()).unwrap_or("");
+            if path.is_empty() || id.is_empty() || password.is_empty() {
+                return Response::error(
+                    400,
+                    lang.t(
+                        "需要 path、id 与 password",
+                        "path, id and password are required",
+                    ),
+                );
+            }
+            match cercis_core::access::create_member(
+                std::path::Path::new(path),
+                id,
+                name,
+                password,
+                cercis_core::crypto::KdfParams::from_env(),
+                note,
+            ) {
+                Ok(rec) => Response::json(
+                    &json!({
+                        "ok": true,
+                        "member": rec.id,
+                        "display_name": rec.display_name,
+                        "note": lang.t(
+                            "私钥已用该成员的口令加密后存进项目；口令本身没有写进项目。",
+                            "The private key is stored encrypted with that member's password; the password itself never enters the project."
+                        ),
+                    })
+                    .to_string(),
+                ),
+                Err(e) => Response::error(400, &e.to_string()),
+            }
+        }
+
+        "/api/access/zone" => {
+            if req.method != "POST" {
+                return Response::error(400, "POST only");
+            }
+            let body: Value = match serde_json::from_str(&req.body) {
+                Ok(v) => v,
+                Err(e) => return Response::error(400, &format!("body 不是 JSON：{e}")),
+            };
+            let path = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let name = body.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let label = body.get("label").and_then(|v| v.as_str()).unwrap_or("");
+            let paths: Vec<String> = body
+                .get("paths")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str())
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let mut grants = Vec::new();
+            if let Some(arr) = body.get("members").and_then(|v| v.as_array()) {
+                for m in arr {
+                    let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                    if id.is_empty() {
+                        continue;
+                    }
+                    let perm = m
+                        .get("permission")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("read");
+                    match cercis_core::Permission::parse(perm) {
+                        Ok(p) => grants.push((id.to_string(), p)),
+                        Err(e) => return Response::error(400, &e.to_string()),
+                    }
+                }
+            }
+            if path.is_empty() || name.is_empty() || paths.is_empty() || grants.is_empty() {
+                return Response::error(
+                    400,
+                    lang.t(
+                        "需要 path、name、至少一条路径规则与至少一个成员",
+                        "path, name, at least one path rule and one member are required",
+                    ),
+                );
+            }
+            let keep_plaintext = body
+                .get("keep_plaintext")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let no_apply = body
+                .get("no_apply")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            match cercis_core::access::create_zone(
+                std::path::Path::new(path),
+                name,
+                label,
+                &paths,
+                &grants,
+                !no_apply,
+                keep_plaintext,
+            ) {
+                Ok((zone, report)) => Response::json(
+                    &json!({
+                        "ok": true,
+                        "zone": zone.name,
+                        "label": zone.label,
+                        "generation": zone.generation,
+                        "key_fingerprint": zone.key_fingerprint,
+                        "paths": zone.paths,
+                        "encrypted": report.as_ref().map(|r| r.encrypted.clone()).unwrap_or_default(),
+                        "kept_plaintext": report.as_ref().map(|r| r.kept_plaintext.clone()).unwrap_or_default(),
+                        "objects_encrypted": report.as_ref().map(|r| r.objects_encrypted).unwrap_or(0),
+                    })
+                    .to_string(),
+                ),
+                Err(e) => Response::error(400, &e.to_string()),
+            }
+        }
+
+        "/api/access/grant" => {
+            if req.method != "POST" {
+                return Response::error(400, "POST only");
+            }
+            let body: Value = match serde_json::from_str(&req.body) {
+                Ok(v) => v,
+                Err(e) => return Response::error(400, &format!("body 不是 JSON：{e}")),
+            };
+            let path = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let zone = body.get("zone").and_then(|v| v.as_str()).unwrap_or("");
+            let member = body.get("member").and_then(|v| v.as_str()).unwrap_or("");
+            let perm = body
+                .get("permission")
+                .and_then(|v| v.as_str())
+                .unwrap_or("read");
+            let actor = body
+                .get("as")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty());
+            if path.is_empty() || zone.is_empty() || member.is_empty() {
+                return Response::error(400, lang.t("需要 path、zone、member", "path, zone, member are required"));
+            }
+            let permission = match cercis_core::Permission::parse(perm) {
+                Ok(p) => p,
+                Err(e) => return Response::error(400, &e.to_string()),
+            };
+            match cercis_core::access::grant(
+                std::path::Path::new(path),
+                zone,
+                member,
+                permission,
+                actor,
+            ) {
+                Ok(z) => Response::json(
+                    &json!({
+                        "ok": true,
+                        "zone": z.name,
+                        "members": z.members.iter().map(|m| json!({
+                            "id": m.id, "permission": m.permission.as_str(),
+                        })).collect::<Vec<_>>(),
+                    })
+                    .to_string(),
+                ),
+                Err(e) => Response::error(400, &e.to_string()),
+            }
+        }
+
+        "/api/access/revoke" => {
+            if req.method != "POST" {
+                return Response::error(400, "POST only");
+            }
+            let body: Value = match serde_json::from_str(&req.body) {
+                Ok(v) => v,
+                Err(e) => return Response::error(400, &format!("body 不是 JSON：{e}")),
+            };
+            let path = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let zone = body.get("zone").and_then(|v| v.as_str()).unwrap_or("");
+            let member = body.get("member").and_then(|v| v.as_str()).unwrap_or("");
+            let actor = body
+                .get("as")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty());
+            if path.is_empty() || zone.is_empty() || member.is_empty() {
+                return Response::error(400, lang.t("需要 path、zone、member", "path, zone, member are required"));
+            }
+            match cercis_core::access::revoke(
+                std::path::Path::new(path),
+                zone,
+                member,
+                actor,
+            ) {
+                Ok(rep) => Response::json(
+                    &json!({
+                        "ok": true,
+                        "zone": rep.zone,
+                        "removed": rep.member,
+                        "generation": rep.generation,
+                        "key_fingerprint": rep.key_fingerprint,
+                        "reencrypted": rep.reencrypted,
+                        "remaining": rep.remaining,
+                    })
+                    .to_string(),
+                ),
+                Err(e) => Response::error(400, &e.to_string()),
+            }
+        }
+
         // 插件列表（含信任状态）
         "/api/plugins" => {
             let Some(path) = req.query.get("path") else {
@@ -1181,15 +1596,29 @@ mod tests {
         }
     }
 
+    /// 加密共享的运行环境：**进程内只设一次**（测试是并行跑的，
+    /// 谁都不许在跑的过程中把环境变量删掉，否则另一个测试会跑去写真实 HOME）。
+    fn share_env() -> std::path::PathBuf {
+        static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+        HOME.get_or_init(|| {
+            let home = std::env::temp_dir().join("cercis-app-share-home");
+            let _ = std::fs::remove_dir_all(&home);
+            let _ = std::fs::create_dir_all(&home);
+            std::env::set_var("CERCIS_SHARE_HOME", &home);
+            std::env::set_var("CERCIS_SHARE_KDF", "light");
+            std::env::set_var("CERCIS_KEYCHAIN", "off");
+            home
+        })
+        .clone()
+    }
+
     /// S11：app 侧的加密区域端点——状态可读、打开项目时会"锁着"、解锁后可用、上锁能收尾。
     #[test]
     fn access_endpoints_report_and_unlock() {
         let dir = std::env::temp_dir().join("cercis-app-access-test");
         let _ = std::fs::remove_dir_all(&dir);
         let project = dir.join("proj");
-        std::env::set_var("CERCIS_SHARE_HOME", dir.join("share-home"));
-        std::env::set_var("CERCIS_SHARE_KDF", "light");
-        std::env::set_var("CERCIS_KEYCHAIN", "off");
+        let _share_home = share_env();
 
         let p = cercis_core::Project::create(&project, "app 加密试验", Default::default()).unwrap();
         let mut row = cercis_core::table::Row::new();
@@ -1266,9 +1695,193 @@ mod tests {
         let body: Value = serde_json::from_str(&res.body).unwrap();
         assert_eq!(body["ok"], true);
 
-        std::env::remove_var("CERCIS_SHARE_HOME");
-        std::env::remove_var("CERCIS_SHARE_KDF");
-        std::env::remove_var("CERCIS_KEYCHAIN");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// S13：app 里的"搬运"——打包 → 合并 → 看报告，全走内核。
+    #[test]
+    fn transfer_endpoints_pack_and_merge() {
+        let dir = std::env::temp_dir().join("cercis-app-transfer-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let a = dir.join("a");
+        let b = dir.join("b");
+        let p = cercis_core::Project::create(&a, "搬运试验", Default::default()).unwrap();
+        let mut row = cercis_core::table::Row::new();
+        row.insert("record_id".into(), "R-1".into());
+        row.insert("value_num".into(), "1".into());
+        p.store
+            .append_row_extending("records", &[], row, "R-1", "app 打包测试")
+            .unwrap();
+        // 第二台设备（复制一份），各加一条
+        copy_dir(&a, &b);
+        {
+            let pb = cercis_core::Project::open(&b, None).unwrap();
+            let mut row = cercis_core::table::Row::new();
+            row.insert("record_id".into(), "R-2".into());
+            row.insert("value_num".into(), "2".into());
+            pb.store
+                .append_row_extending("records", &[], row, "R-2", "第二台设备")
+                .unwrap();
+        }
+
+        // 打包（b → 包）
+        let pack_dir = dir.join("包");
+        let res = handle(&req(
+            "POST",
+            "/api/pack",
+            &[],
+            &format!(
+                r#"{{"path":"{}","out":"{}","part_size_mb":20}}"#,
+                b.display(),
+                pack_dir.display()
+            ),
+        ));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["ok"], true, "{body}");
+        assert!(pack_dir.join("pack.json").exists());
+
+        // 合并进 a
+        let res = handle(&req(
+            "POST",
+            "/api/merge",
+            &[],
+            &format!(
+                r#"{{"pack":"{}","into":"{}"}}"#,
+                pack_dir.display(),
+                a.display()
+            ),
+        ));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["ok"], true, "{body}");
+        assert!(body["summary"].as_str().unwrap().contains("并集"));
+        let report = body["report_path"].as_str().unwrap().to_string();
+        assert!(std::path::Path::new(&report).exists());
+
+        // 报告列表 + 读报告
+        let res = handle(&req("GET", "/api/reports", &[("path", a.to_str().unwrap())], ""));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let name = body["reports"][0]["name"].as_str().unwrap().to_string();
+        assert!(name.starts_with("merge-report-"));
+        let res = handle(&req(
+            "GET",
+            "/api/report",
+            &[("path", a.to_str().unwrap()), ("file", &name)],
+            "",
+        ));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["ok"], true);
+        assert!(body["text"].as_str().unwrap().contains("合并报告"));
+
+        // 目录穿越会被挡
+        let res = handle(&req(
+            "GET",
+            "/api/report",
+            &[("path", a.to_str().unwrap()), ("file", "../project.yaml")],
+            "",
+        ));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["ok"], false);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// S13：app 里的加密区域管理——建成员、建区域（立刻加密）、授权、移除。
+    #[test]
+    fn access_admin_endpoints_manage_members_and_zones() {
+        let dir = std::env::temp_dir().join("cercis-app-zone-admin-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let project = dir.join("proj");
+        let _share_home = share_env();
+        let p = cercis_core::Project::create(&project, "区域管理", Default::default()).unwrap();
+        let mut row = cercis_core::table::Row::new();
+        row.insert("record_id".into(), "R-1".into());
+        row.insert("secret_note".into(), "机密Z7".into());
+        p.store
+            .append_row_extending("records", &[], row, "R-1", "写一条")
+            .unwrap();
+        let path = project.to_str().unwrap();
+
+        // 建两个成员
+        for (id, pw) in [("alice", "alice-pw"), ("bob", "bob-pw")] {
+            let res = handle(&req(
+                "POST",
+                "/api/access/member",
+                &[],
+                &format!(
+                    r#"{{"path":"{path}","id":"{id}","name":"{id}","password":"{pw}"}}"#
+                ),
+            ));
+            let body: Value = serde_json::from_str(&res.body).unwrap();
+            assert_eq!(body["ok"], true, "{body}");
+        }
+
+        // 建区域（立刻加密）：alice 管理、bob 只读
+        let res = handle(&req(
+            "POST",
+            "/api/access/zone",
+            &[],
+            &format!(
+                r#"{{"path":"{path}","name":"secret","label":"机密的","paths":["tables/records.csv"],
+                    "members":[{{"id":"alice","permission":"admin"}},{{"id":"bob","permission":"read"}}]}}"#
+            ),
+        ));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["ok"], true, "{body}");
+        assert_eq!(body["generation"], 1);
+        assert_eq!(body["encrypted"].as_array().unwrap().len(), 1);
+        assert!(!project.join("tables/records.csv").exists(), "明文应已换成密文");
+
+        // 授权：把 bob 提到可写（alice 已在上面解锁过？没有——先解锁）
+        let res = handle(&req(
+            "POST",
+            "/api/access/unlock",
+            &[],
+            &format!(r#"{{"path":"{path}","member":"alice","password":"alice-pw"}}"#),
+        ));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["ok"], true, "{body}");
+
+        let res = handle(&req(
+            "POST",
+            "/api/access/grant",
+            &[],
+            &format!(
+                r#"{{"path":"{path}","zone":"secret","member":"bob","permission":"write","as":"alice"}}"#
+            ),
+        ));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["ok"], true, "{body}");
+        assert!(body["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["id"] == "bob" && m["permission"] == "write"));
+
+        // 移除 bob：换密钥 + 重加密
+        let res = handle(&req(
+            "POST",
+            "/api/access/revoke",
+            &[],
+            &format!(r#"{{"path":"{path}","zone":"secret","member":"bob","as":"alice"}}"#),
+        ));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["ok"], true, "{body}");
+        assert_eq!(body["generation"], 2);
+        assert_eq!(body["reencrypted"], 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for e in std::fs::read_dir(from).unwrap().flatten() {
+            let p = e.path();
+            let dest = to.join(e.file_name());
+            if p.is_dir() {
+                copy_dir(&p, &dest);
+            } else {
+                std::fs::copy(&p, &dest).unwrap();
+            }
+        }
     }
 }

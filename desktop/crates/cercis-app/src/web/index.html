@@ -176,11 +176,78 @@
     </div>
     <div class="scroll" style="margin-top:12px;">
       <table id="accessTable"><thead>
-        <tr><th id="accessThZone"></th><th id="accessThMembers"></th><th id="accessThFiles"></th><th id="accessThKey"></th><th id="accessThPerm"></th></tr>
+        <tr><th id="accessThZone"></th><th id="accessThMembers"></th><th id="accessThFiles"></th><th id="accessThKey"></th><th id="accessThPerm"></th><th></th></tr>
       </thead><tbody></tbody></table>
+    </div>
+
+    <h3 style="margin-top:16px; font-size:15px;" id="accessMemberTitle"></h3>
+    <div class="row">
+      <input id="newMemberId" placeholder="alice" style="width:130px;" />
+      <input id="newMemberName" style="width:150px;" />
+      <input id="newMemberPw" type="password" style="width:170px;" />
+      <button id="addMemberBtn"></button>
+      <span class="status" id="addMemberStatus"></span>
+    </div>
+
+    <h3 style="margin-top:16px; font-size:15px;" id="accessZoneTitle"></h3>
+    <div class="row">
+      <input id="newZoneName" placeholder="patent-data" style="width:150px;" />
+      <input id="newZoneLabel" style="width:150px;" />
+      <input id="newZonePaths" style="width:360px;" />
+    </div>
+    <div class="row" id="newZoneMembers" style="flex-wrap:wrap;"></div>
+    <div class="row">
+      <button id="createZoneBtn" class="primary"></button>
+      <label class="muted" style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="newZoneNoApply" /> <span id="newZoneNoApplyLabel"></span></label>
+      <span class="status" id="newZoneStatus"></span>
     </div>
     <h2 style="margin-top:16px; font-size:15px;" id="accessProblemsTitle"></h2>
     <pre class="muted" id="accessProblems" style="white-space:pre-wrap;"></pre>
+  </div>
+
+  <div class="card" id="transferCard" style="display:none;">
+    <h2 id="transferTitle"></h2>
+    <p class="muted" id="transferNote"></p>
+
+    <h3 style="margin-top:14px; font-size:15px;" id="packTitle"></h3>
+    <div class="row">
+      <input id="packOut" style="width:330px;" />
+      <input id="packPartMb" type="number" min="0" value="20" style="width:80px;" />
+      <input id="packSince" style="width:300px;" />
+      <span class="status" id="packStatus"></span>
+    </div>
+    <div class="row">
+      <button id="packDryBtn"></button>
+      <button id="packBtn" class="primary"></button>
+    </div>
+    <pre class="muted" id="packResult" style="white-space:pre-wrap;"></pre>
+
+    <h3 style="margin-top:16px; font-size:15px;" id="mergeTitle"></h3>
+    <div class="row">
+      <input id="mergePack" style="width:330px;" />
+      <input id="mergeMember" style="width:150px;" />
+      <span class="status" id="mergeStatus"></span>
+    </div>
+    <div class="row">
+      <button id="mergeDryBtn"></button>
+      <button id="mergeBtn" class="primary"></button>
+    </div>
+    <pre class="muted" id="mergeResult" style="white-space:pre-wrap;"></pre>
+
+    <h3 style="margin-top:16px; font-size:15px;" id="reportsTitle"></h3>
+    <div class="row">
+      <button id="reportsBtn"></button>
+      <select id="reportsSel" style="width:330px;"></select>
+      <button id="reportViewBtn"></button>
+    </div>
+    <pre class="muted" id="reportText" style="white-space:pre-wrap; max-height:320px; overflow:auto;"></pre>
+
+    <h3 style="margin-top:16px; font-size:15px;" id="syncTitle"></h3>
+    <div class="row">
+      <button id="syncBtn"></button>
+      <span class="status" id="syncStatus"></span>
+    </div>
+    <pre class="muted" id="syncResult" style="white-space:pre-wrap;"></pre>
   </div>
 
   <div class="card" id="logCard" style="display:none;">
@@ -235,7 +302,7 @@ const I18N = {
   zh: {
     slogan: "愿瑟希斯捍卫你的思想。",
     open: "打开项目", placeholder: "项目文件夹路径",
-    tabs: { data: "数据", plugins: "插件", market: "插件市场", access: "加密区域", log: "变更流水", tools: "工具", todos: "待办" },
+    tabs: { data: "数据", plugins: "插件", market: "插件市场", access: "加密区域", transfer: "搬运", log: "变更流水", tools: "工具", todos: "待办" },
     rows: "行", refresh: "刷新", filterPh: "筛选：列:运算符:值（如 value_num:gt:20）",
     trust: "信任并启用", revoke: "撤销信任", trusted: "已信任", untrusted: "未信任",
     validate: "校验项目", agents: "刷新 AI 材料（AGENTS.md）", manifest: "生成机器清单",
@@ -300,11 +367,47 @@ const I18N = {
     accessNone: "本项目还没有加密区域。（想加密某部分内容：管理员用 cercis share zone-create 配置。）",
     accessPlaintextLeft: "还有没加密的明文",
     accessUnreadable: "有解不开的密文",
+    // 加密区域管理（S13）
+    accessMemberTitle: "新建成员（口令由你本人设置；私钥用它加密后存进项目）",
+    accessMemberIdPh: "成员 id，如 alice",
+    accessMemberNamePh: "显示名，如 张老师",
+    accessMemberPwPh: "口令（忘了无法找回）",
+    accessAddMember: "新建成员",
+    accessZoneTitle: "新建加密区域（路径规则用分号隔开；至少一个成员要给「管理」）",
+    accessZoneNamePh: "区域名，如 patent-data",
+    accessZoneLabelPh: "显示名，如 专利数据",
+    accessZonePathsPh: "路径规则：tables/patent_*.csv; methods/配方/**",
+    accessNoApply: "先只写声明、不立刻加密（之后用 share apply）",
+    accessCreateZone: "建区域",
+    accessGrant: "授权",
+    accessRevoke: "移除",
+    accessNoMembers: "（先建一个成员，才能建区域）",
+    // 搬运（S13）
+    transferTitle: "搬运（打包带走 / 合并回来）",
+    transferNote: "没带 NAS 时的通道：在这台机器上打包（可增量、可分卷），在另一台机器上合并。合并是并集——两边新增的记录都保留；两边都改过的文件保留双方副本，本地文件永不被覆盖。加密区域里的文件保持密文搬运。",
+    packTitle: "打包（输出目录不能放在项目里面）",
+    packOutPh: "输出目录，如 ~/Downloads/我的包",
+    packPartPh: "每卷 MB（0=整包）",
+    packSincePh: "增量：上次的 pack.json（可留空）",
+    packDry: "试运行",
+    packDo: "打包",
+    mergeTitle: "合并（把包并进当前打开的项目）",
+    mergePackPh: "包目录（含 pack.json 与 part-*）",
+    mergeMemberPh: "用哪个成员解锁（可留空）",
+    mergeDry: "试运行",
+    mergeDo: "合并",
+    reportsTitle: "合并报告",
+    reportsLoad: "刷新报告列表",
+    reportView: "看这份报告",
+    transferNoProject: "先打开一个项目。",
+    transferDone: "完成",
+    syncTitle: "共存体检（云盘 / Git 目录里用会不会分叉）",
+    syncBtn: "跑一次体检",
   },
   en: {
     slogan: "May Cerces safeguard your thoughts.",
     open: "Open project", placeholder: "Project folder path",
-    tabs: { data: "Data", plugins: "Plugins", market: "Market", access: "Encrypted zones", log: "Change log", tools: "Tools", todos: "To-dos" },
+    tabs: { data: "Data", plugins: "Plugins", market: "Market", access: "Encrypted zones", transfer: "Transfer", log: "Change log", tools: "Tools", todos: "To-dos" },
     rows: "rows", refresh: "Refresh", filterPh: "Filter: col:op:value (e.g. value_num:gt:20)",
     trust: "Trust & enable", revoke: "Revoke", trusted: "trusted", untrusted: "untrusted",
     validate: "Validate project", agents: "Refresh AI files (AGENTS.md)", manifest: "Generate manifest",
@@ -368,6 +471,42 @@ const I18N = {
     accessNone: "No encrypted zones in this project yet. (Admins can create one with: cercis share zone-create)",
     accessPlaintextLeft: "plaintext left to encrypt",
     accessUnreadable: "ciphertext that cannot be opened",
+    // Zone admin (S13)
+    accessMemberTitle: "New member (you set the password; the private key is stored encrypted with it)",
+    accessMemberIdPh: "member id, e.g. alice",
+    accessMemberNamePh: "display name, e.g. Alice",
+    accessMemberPwPh: "password (cannot be recovered if forgotten)",
+    accessAddMember: "Create member",
+    accessZoneTitle: "New encrypted zone (separate path rules with ';'; at least one member must be admin)",
+    accessZoneNamePh: "zone name, e.g. patent-data",
+    accessZoneLabelPh: "display name",
+    accessZonePathsPh: "path rules: tables/patent_*.csv; methods/**",
+    accessNoApply: "only declare the zone for now (encrypt later with share apply)",
+    accessCreateZone: "Create zone",
+    accessGrant: "Grant",
+    accessRevoke: "Remove",
+    accessNoMembers: "(create a member first)",
+    // Transfer (S13)
+    transferTitle: "Transfer (pack out / merge back)",
+    transferNote: "For when there is no NAS: pack on this machine (optionally incremental, multi-volume), merge on the other machine. Merging is a union — both sides' new records survive; files changed on both sides keep both copies, and local files are never overwritten. Files inside encrypted zones travel as ciphertext.",
+    packTitle: "Pack (the output folder must be outside the project)",
+    packOutPh: "output folder, e.g. ~/Downloads/my-pack",
+    packPartPh: "MB per volume (0 = single)",
+    packSincePh: "incremental: previous pack.json (optional)",
+    packDry: "Dry run",
+    packDo: "Pack",
+    mergeTitle: "Merge (into the project currently open)",
+    mergePackPh: "pack folder (contains pack.json and part-*)",
+    mergeMemberPh: "unlock as member (optional)",
+    mergeDry: "Dry run",
+    mergeDo: "Merge",
+    reportsTitle: "Merge reports",
+    reportsLoad: "Refresh reports",
+    reportView: "Open report",
+    transferNoProject: "Open a project first.",
+    transferDone: "done",
+    syncTitle: "Co-existence check (cloud drive / git folder)",
+    syncBtn: "Run check",
   }
 };
 let lang = "zh";
@@ -615,6 +754,7 @@ let currentTab = "data";
 function renderTabs() {
   const tabs = [
     ["data", t().tabs.data], ["plugins", t().tabs.plugins], ["market", t().tabs.market],
+    ["access", t().tabs.access], ["transfer", t().tabs.transfer],
     ["log", t().tabs.log], ["tools", t().tabs.tools], ["todos", t().tabs.todos]
   ];
   const el = $("tabs");
@@ -633,6 +773,7 @@ function loadActiveTab() {
   show("pluginsCard", currentTab === "plugins");
   show("marketCard", currentTab === "market");
   show("accessCard", currentTab === "access");
+  show("transferCard", currentTab === "transfer");
   show("logCard", currentTab === "log");
   show("toolsCard", currentTab === "tools");
   show("todosCard", currentTab === "todos");
@@ -640,7 +781,139 @@ function loadActiveTab() {
   if (currentTab === "plugins") loadPlugins();
   if (currentTab === "market") loadMarket();
   if (currentTab === "access") loadAccess();
+  if (currentTab === "transfer") loadTransfer();
   if (currentTab === "log") loadLog();
+}
+
+// ———— 搬运（S13）：打包带走 / 合并回来 / 看报告 ————
+function loadTransfer() {
+  $("transferTitle").textContent = t().transferTitle;
+  $("transferNote").textContent = t().transferNote;
+  $("packTitle").textContent = t().packTitle;
+  $("packOut").placeholder = t().packOutPh;
+  $("packPartMb").placeholder = t().packPartPh;
+  $("packSince").placeholder = t().packSincePh;
+  $("packDryBtn").textContent = t().packDry;
+  $("packBtn").textContent = t().packDo;
+  $("mergeTitle").textContent = t().mergeTitle;
+  $("mergePack").placeholder = t().mergePackPh;
+  $("mergeMember").placeholder = t().mergeMemberPh;
+  $("mergeDryBtn").textContent = t().mergeDry;
+  $("mergeBtn").textContent = t().mergeDo;
+  $("reportsTitle").textContent = t().reportsTitle;
+  $("reportsBtn").textContent = t().reportsLoad;
+  $("reportViewBtn").textContent = t().reportView;
+  $("syncTitle").textContent = t().syncTitle;
+  $("syncBtn").textContent = t().syncBtn;
+  if (!project) {
+    $("packResult").textContent = t().transferNoProject;
+    return;
+  }
+  if (!$("packOut").value) {
+    const stamp = new Date().toISOString().slice(0, 10);
+    $("packOut").value = `${project.path}/../cercis-包-${stamp}`;
+  }
+  loadReports();
+}
+
+function showPackResult(r) {
+  if (!r.ok) { $("packResult").textContent = r.error || ""; return; }
+  const lines = [];
+  lines.push(`${r.dry_run ? "（试运行）" : ""}${r.files} 个文件 / ${r.bytes} 字节 → ${r.out}`);
+  lines.push(`共 ${r.parts.length} 卷${r.parts.length > 1 ? "：" + r.parts.join(" / ") : ""}`);
+  if (r.skipped_unchanged) lines.push(`增量：${r.skipped_unchanged} 个文件没变，跳过`);
+  if ((r.removed || []).length) lines.push(`源项目里少了 ${r.removed.length} 个文件（只记录，不代删）：${r.removed.join("、")}`);
+  for (const n of (r.notes || [])) lines.push("注：" + n);
+  $("packResult").textContent = lines.join("\n");
+}
+
+function showMergeResult(r) {
+  if (!r.ok) { $("mergeResult").textContent = r.error || ""; return; }
+  const lines = [r.summary];
+  if (r.dry_run) lines.push("（试运行：磁盘上没有改动）");
+  for (const m of (r.merged || [])) {
+    lines.push(`并集：${m.table} 新增 ${m.added_rows} 行${m.encrypted ? "（加密区域）" : ""}`);
+    for (const k of (m.key_conflicts || [])) lines.push(`  ⚠ 同一编号两份不同内容：${k}`);
+  }
+  for (const c of (r.conflicts || [])) lines.push(`冲突：${c.path} → 对方那份留成 ${c.wrote}`);
+  for (const x of (r.refused || [])) lines.push(`没动：${x}`);
+  if ((r.removed_reported || []).length) lines.push(`对方删掉了 ${r.removed_reported.length} 个文件（没有替你删）`);
+  if (r.report_path) lines.push("报告：" + r.report_path);
+  for (const n of (r.notes || [])) lines.push("注：" + n);
+  $("mergeResult").textContent = lines.join("\n");
+}
+
+async function doPack(dryRun) {
+  if (!project) return;
+  $("packStatus").textContent = "…";
+  const r = await apiPost("/api/pack", {
+    path: project.path,
+    out: $("packOut").value.trim(),
+    part_size_mb: Number($("packPartMb").value || 20),
+    since: $("packSince").value.trim(),
+    dry_run: dryRun,
+  });
+  $("packStatus").textContent = r.ok ? "✓" : "✗";
+  showPackResult(r);
+}
+
+async function doMerge(dryRun) {
+  if (!project) return;
+  $("mergeStatus").textContent = "…";
+  const r = await apiPost("/api/merge", {
+    pack: $("mergePack").value.trim(),
+    into: project.path,
+    member: $("mergeMember").value.trim(),
+    dry_run: dryRun,
+  });
+  $("mergeStatus").textContent = r.ok ? "✓" : "✗";
+  showMergeResult(r);
+  if (r.ok && !dryRun) { loadReports(); loadTables(); }
+}
+
+async function loadReports() {
+  if (!project) return;
+  const r = await apiGet("/api/reports", { path: project.path });
+  const sel = $("reportsSel");
+  sel.innerHTML = "";
+  for (const rep of (r.reports || [])) {
+    const opt = document.createElement("option");
+    opt.value = rep.name;
+    const when = rep.mtime_unix ? new Date(rep.mtime_unix * 1000).toLocaleString() : "";
+    opt.textContent = `${rep.name}（${when}）`;
+    sel.appendChild(opt);
+  }
+  if (!(r.reports || []).length) {
+    $("reportText").textContent = "";
+  }
+}
+
+async function viewReport() {
+  if (!project) return;
+  const file = $("reportsSel").value;
+  if (!file) return;
+  const r = await apiGet("/api/report", { path: project.path, file });
+  $("reportText").textContent = r.ok ? r.text : (r.error || "");
+}
+
+async function doSync() {
+  if (!project) return;
+  $("syncStatus").textContent = "…";
+  const r = await apiGet("/api/sync", { path: project.path });
+  $("syncStatus").textContent = r.ok ? "✓" : "⚠";
+  const lines = [r.summary || r.error || ""];
+  if (r.cloud) lines.push(`云盘：${r.cloud}`);
+  if (r.git) lines.push(`Git：${r.git.repo_root}（分支 ${r.git.branch}${r.git.dirty_files >= 0 ? `，未提交 ${r.git.dirty_files}` : ""}）`);
+  for (const f of (r.findings || [])) {
+    lines.push(`- ${f.path}（${f.kind}）：${f.detail}`);
+    lines.push(`    建议：${f.advice}`);
+  }
+  for (const n of (r.notes || [])) lines.push("注：" + n);
+  if (r.verdict === "needs-merge") {
+    lines.push("");
+    lines.push("收拢办法：把要保留的一边作为主项目，另一边 pack 出来再 merge 进主项目；合并只增不改。");
+  }
+  $("syncResult").textContent = lines.join("\n");
 }
 
 // ———— 加密区域（S11）：状态、解锁、上锁 ————
@@ -698,12 +971,134 @@ async function loadAccess() {
       <td>${(z.members || []).map(m => `<div>${m.id} <span class="muted">${m.permission}</span></div>`).join("")}</td>
       <td>${z.files} ${flags.length ? "<br>" + flags.join(" ") : ""}</td>
       <td><span class="muted">${z.key_fingerprint}</span></td>
-      <td>${z.permission ? z.permission : "<span class=muted>—</span>"}</td>`;
+      <td>${z.permission ? z.permission : "<span class=muted>—</span>"}</td>
+      <td></td>`;
+    // 管理员动作：授权 / 移除（用当前选中的成员 + 权限）
+    const actions = tr.lastElementChild;
+    const permSel = document.createElement("select");
+    for (const p of ["read", "write", "admin"]) {
+      const o = document.createElement("option");
+      o.value = p; o.textContent = p;
+      permSel.appendChild(o);
+    }
+    const grant = document.createElement("button");
+    grant.textContent = t().accessGrant;
+    grant.onclick = async () => {
+      const member = $("accessMember").value;
+      if (!member) { alert(t().accessNoMembers); return; }
+      grant.disabled = true;
+      const r = await apiPost("/api/access/grant", {
+        path: project.path, zone: z.zone, member,
+        permission: permSel.value, as: res.unlocked_as || "",
+      });
+      grant.disabled = false;
+      if (!r.ok) alert(r.error); else await loadAccess();
+    };
+    const revoke = document.createElement("button");
+    revoke.textContent = t().accessRevoke;
+    revoke.style.marginLeft = "6px";
+    revoke.onclick = async () => {
+      const member = $("accessMember").value;
+      if (!member) { alert(t().accessNoMembers); return; }
+      if (!confirm(`${t().accessRevoke} ${member} @ ${z.zone}?`)) return;
+      revoke.disabled = true;
+      const r = await apiPost("/api/access/revoke", {
+        path: project.path, zone: z.zone, member, as: res.unlocked_as || "",
+      });
+      revoke.disabled = false;
+      if (!r.ok) alert(r.error); else await loadAccess();
+    };
+    actions.appendChild(permSel);
+    actions.appendChild(grant);
+    actions.appendChild(revoke);
     tbody.appendChild(tr);
   }
 
   $("accessProblems").textContent = (res.issues || []).join("\n");
   $("accessStatus").textContent = "";
+
+  // 表单文案与"新建区域"的成员勾选框
+  $("accessMemberTitle").textContent = t().accessMemberTitle;
+  $("newMemberId").placeholder = t().accessMemberIdPh;
+  $("newMemberName").placeholder = t().accessMemberNamePh;
+  $("newMemberPw").placeholder = t().accessMemberPwPh;
+  $("addMemberBtn").textContent = t().accessAddMember;
+  $("accessZoneTitle").textContent = t().accessZoneTitle;
+  $("newZoneName").placeholder = t().accessZoneNamePh;
+  $("newZoneLabel").placeholder = t().accessZoneLabelPh;
+  $("newZonePaths").placeholder = t().accessZonePathsPh;
+  $("newZoneNoApplyLabel").textContent = t().accessNoApply;
+  $("createZoneBtn").textContent = t().accessCreateZone;
+
+  const box = $("newZoneMembers");
+  const keepChecked = new Set(
+    [...box.querySelectorAll("input[type=checkbox]:checked")].map(x => x.dataset.id)
+  );
+  const keepPerms = {};
+  for (const sel of box.querySelectorAll("select")) keepPerms[sel.dataset.id] = sel.value;
+  box.innerHTML = "";
+  if (!(res.members || []).length) {
+    box.innerHTML = `<span class="muted">${t().accessNoMembers}</span>`;
+  }
+  for (const m of (res.members || [])) {
+    const label = document.createElement("label");
+    label.className = "muted";
+    label.style.cssText = "display:flex;align-items:center;gap:4px;margin-right:12px;";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.dataset.id = m.id;
+    cb.checked = keepChecked.has(m.id);
+    const sel = document.createElement("select");
+    sel.dataset.id = m.id;
+    for (const p of ["read", "write", "admin"]) {
+      const o = document.createElement("option");
+      o.value = p; o.textContent = p;
+      sel.appendChild(o);
+    }
+    sel.value = keepPerms[m.id] || "read";
+    label.appendChild(cb);
+    label.appendChild(document.createTextNode(m.id));
+    label.appendChild(sel);
+    box.appendChild(label);
+  }
+}
+
+async function addMember() {
+  const id = $("newMemberId").value.trim();
+  const password = $("newMemberPw").value;
+  if (!id || !password) { alert(t().accessMemberPwPh); return; }
+  $("addMemberStatus").textContent = "…";
+  const r = await apiPost("/api/access/member", {
+    path: project.path, id,
+    name: $("newMemberName").value.trim(),
+    password, note: "",
+  });
+  $("newMemberPw").value = "";   // 口令只在这一次请求里用
+  $("addMemberStatus").textContent = r.ok ? "✓" : (r.error || "");
+  if (r.ok) { $("newMemberId").value = ""; $("newMemberName").value = ""; await loadAccess(); }
+}
+
+async function createZone() {
+  const paths = $("newZonePaths").value.split(/[;；\n]/).map(s => s.trim()).filter(Boolean);
+  const members = [];
+  for (const cb of $("newZoneMembers").querySelectorAll("input[type=checkbox]")) {
+    if (!cb.checked) continue;
+    const sel = $("newZoneMembers").querySelector(`select[data-id="${cb.dataset.id}"]`);
+    members.push({ id: cb.dataset.id, permission: sel ? sel.value : "read" });
+  }
+  if (!paths.length || !members.length) { alert(t().accessZonePathsPh); return; }
+  $("newZoneStatus").textContent = "…";
+  const r = await apiPost("/api/access/zone", {
+    path: project.path,
+    name: $("newZoneName").value.trim(),
+    label: $("newZoneLabel").value.trim(),
+    paths, members,
+    no_apply: $("newZoneNoApply").checked,
+  });
+  $("newZoneStatus").textContent = r.ok
+    ? `✓ ${r.zone}（第 ${r.generation} 代，指纹 ${r.key_fingerprint}，加密 ${(r.encrypted || []).length} 个文件）`
+    : (r.error || "");
+  if (r.ok) { await loadAccess(); await loadTables(); }
 }
 
 async function unlockAccess() {
@@ -1110,6 +1505,15 @@ $("entryCancel").onclick = () => show("entryForm", false);
 $("wizardBtn").onclick = createProject;
 $("accessUnlockBtn").onclick = unlockAccess;
 $("accessLockBtn").onclick = lockAccess;
+$("addMemberBtn").onclick = addMember;
+$("createZoneBtn").onclick = createZone;
+$("packBtn").onclick = () => doPack(false);
+$("packDryBtn").onclick = () => doPack(true);
+$("mergeBtn").onclick = () => doMerge(false);
+$("mergeDryBtn").onclick = () => doMerge(true);
+$("reportsBtn").onclick = loadReports;
+$("reportViewBtn").onclick = viewReport;
+$("syncBtn").onclick = doSync;
 $("projectPath").addEventListener("keydown", (e) => { if (e.key === "Enter") openProject(); });
 setLang("zh");
 </script>
