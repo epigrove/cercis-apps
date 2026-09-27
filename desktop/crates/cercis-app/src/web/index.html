@@ -86,6 +86,7 @@
   </div>
 
   <div class="card" id="dataCard" style="display:none;">
+    <div class="muted" id="accountBanner" style="display:none; margin-bottom:8px;"></div>
     <div class="row" style="justify-content: space-between;">
       <h2 id="tableTitle" style="margin:0;"></h2>
       <div class="row">
@@ -163,6 +164,33 @@
   <div class="card" id="accessCard" style="display:none;">
     <h2 id="accessTitle"></h2>
     <p class="muted" id="accessNote"></p>
+    <h3 style="margin-top:12px; font-size:15px;" id="accountTitle"></h3>
+    <div class="muted" id="accountState" style="margin-top:4px;"></div>
+    <div class="row" style="margin-top:6px;">
+      <select id="accountSel" style="width:170px;"></select>
+      <input id="accountPw" type="password" style="width:200px;" />
+      <button id="accountLoginBtn" class="primary"></button>
+      <button id="accountLogoutBtn"></button>
+      <span class="status" id="accountStatus"></span>
+    </div>
+    <div class="row" style="margin-top:6px;">
+      <input id="newAccountId" placeholder="alice" style="width:120px;" />
+      <input id="newAccountName" style="width:140px;" />
+      <select id="newAccountRole" style="width:110px;">
+        <option value="viewer">viewer</option>
+        <option value="editor" selected>editor</option>
+        <option value="admin">admin</option>
+      </select>
+      <input id="newAccountPw" type="password" style="width:170px;" />
+      <button id="accountAddBtn"></button>
+      <span class="status" id="accountAddStatus"></span>
+    </div>
+    <div class="scroll" style="margin-top:8px;">
+      <table id="accountTable"><thead>
+        <tr><th id="accountThId"></th><th id="accountThRole"></th><th id="accountThName"></th><th></th></tr>
+      </thead><tbody></tbody></table>
+    </div>
+
     <div class="muted" id="accessState" style="margin-top:6px;"></div>
     <div class="row" style="margin-top:10px;">
       <select id="accessMember" style="width:170px;"></select>
@@ -403,6 +431,21 @@ const I18N = {
     transferDone: "完成",
     syncTitle: "共存体检（云盘 / Git 目录里用会不会分叉）",
     syncBtn: "跑一次体检",
+    // 多人账户（FR-N08/N09）
+    accountTitle: "账户与角色（多人协作：NAS 上多人先后编辑时启用）",
+    accountNone: "还没有账户（开放模式：不限制，谁打开都能改）。建第一个账户时它必须是管理员。",
+    accountLogin: "登录",
+    accountLogout: "退出登录",
+    accountAdd: "新建账户",
+    accountRole: "角色",
+    accountIdPh: "账户 id",
+    accountNamePh: "显示名",
+    accountPwPh: "口令（只存哈希，忘了无法找回）",
+    accountAs: "当前身份：",
+    accountNotLoggedIn: "当前未登录",
+    accountRequired: "这个项目启用了账户：写入需要先登录（查看者只读、编辑者能写数据、管理员能改结构）。去「加密区域」页登录。",
+    accountGrant: "改角色",
+    accountRemove: "删除",
   },
   en: {
     slogan: "May Cerces safeguard your thoughts.",
@@ -507,6 +550,21 @@ const I18N = {
     transferDone: "done",
     syncTitle: "Co-existence check (cloud drive / git folder)",
     syncBtn: "Run check",
+    // Accounts (FR-N08/N09)
+    accountTitle: "Accounts & roles (for multi-person editing on a NAS)",
+    accountNone: "No accounts yet (open mode: anyone who opens the project can edit). The first account must be an admin.",
+    accountLogin: "Sign in",
+    accountLogout: "Sign out",
+    accountAdd: "Create account",
+    accountRole: "Role",
+    accountIdPh: "account id",
+    accountNamePh: "display name",
+    accountPwPh: "password (hash only; cannot be recovered)",
+    accountAs: "Signed in as: ",
+    accountNotLoggedIn: "not signed in",
+    accountRequired: "This project uses accounts: writing requires signing in (viewer = read-only, editor = data writes, admin = structure & plugins). Sign in on the Encrypted zones page.",
+    accountGrant: "Set role",
+    accountRemove: "Delete",
   }
 };
 let lang = "zh";
@@ -917,6 +975,125 @@ async function doSync() {
 }
 
 // ———— 加密区域（S11）：状态、解锁、上锁 ————
+// ———— 多人账户（FR-N08/N09）：登录、建账户、改角色 ————
+async function loadAccounts() {
+  if (!project) return;
+  $("accountTitle").textContent = t().accountTitle;
+  $("accountLoginBtn").textContent = t().accountLogin;
+  $("accountLogoutBtn").textContent = t().accountLogout;
+  $("accountAddBtn").textContent = t().accountAdd;
+  $("newAccountId").placeholder = t().accountIdPh;
+  $("newAccountName").placeholder = t().accountNamePh;
+  $("newAccountPw").placeholder = t().accountPwPh;
+  $("accountThId").textContent = "id";
+  $("accountThRole").textContent = t().accountRole;
+  $("accountThName").textContent = t().accountNamePh;
+
+  const res = await apiGet("/api/account", { path: project.path });
+  const sel = $("accountSel");
+  const keep = sel.value;
+  sel.innerHTML = "";
+  for (const a of (res.accounts || [])) {
+    const o = document.createElement("option");
+    o.value = a.id;
+    o.textContent = `${a.id}（${a.role}）`;
+    sel.appendChild(o);
+  }
+  if (keep) sel.value = keep;
+  $("accountState").textContent = res.enabled
+    ? (res.whoami ? t().accountAs + `${res.whoami.id}（${res.whoami.role}）` : t().accountNotLoggedIn)
+    : t().accountNone;
+
+  const tbody = $("accountTable").querySelector("tbody");
+  tbody.innerHTML = "";
+  for (const a of (res.accounts || [])) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${a.id}</td><td>${a.role}</td><td>${a.display_name || ""}</td><td></td>`;
+    const actions = tr.lastElementChild;
+    const roleSel = document.createElement("select");
+    for (const r of ["viewer", "editor", "admin"]) {
+      const o = document.createElement("option");
+      o.value = r; o.textContent = r;
+      roleSel.appendChild(o);
+    }
+    roleSel.value = a.role;
+    const setBtn = document.createElement("button");
+    setBtn.textContent = t().accountGrant;
+    setBtn.onclick = async () => {
+      const r = await apiPost("/api/account/role", {
+        path: project.path, id: a.id, role: roleSel.value,
+      });
+      $("accountStatus").textContent = r.ok ? "✓" : (r.error || "");
+      if (r.ok) await loadAccounts();
+    };
+    const delBtn = document.createElement("button");
+    delBtn.textContent = t().accountRemove;
+    delBtn.style.marginLeft = "6px";
+    delBtn.onclick = async () => {
+      if (!confirm(`${t().accountRemove} ${a.id}?`)) return;
+      const r = await apiPost("/api/account/remove", { path: project.path, id: a.id });
+      $("accountStatus").textContent = r.ok ? "✓" : (r.error || "");
+      if (r.ok) await loadAccounts();
+    };
+    actions.appendChild(roleSel);
+    actions.appendChild(setBtn);
+    actions.appendChild(delBtn);
+    tbody.appendChild(tr);
+  }
+}
+
+async function loginAccount() {
+  if (!project) return;
+  const id = $("accountSel").value;
+  const password = $("accountPw").value;
+  if (!id || !password) { alert(t().accountPwPh); return; }
+  $("accountStatus").textContent = "…";
+  const r = await apiPost("/api/account/login", { path: project.path, id, password });
+  $("accountPw").value = "";   // 口令只在这一次请求里用
+  $("accountStatus").textContent = r.ok ? "✓" : (r.error || "");
+  if (r.ok) { await loadAccounts(); await refreshAccountBanner(); }
+}
+
+async function logoutAccount() {
+  if (!project) return;
+  const r = await apiPost("/api/account/logout", { path: project.path });
+  $("accountStatus").textContent = r.ok ? "✓" : (r.error || "");
+  await loadAccounts();
+  await refreshAccountBanner();
+}
+
+async function addAccount() {
+  if (!project) return;
+  const id = $("newAccountId").value.trim();
+  const password = $("newAccountPw").value;
+  if (!id || !password) { alert(t().accountPwPh); return; }
+  $("accountAddStatus").textContent = "…";
+  const r = await apiPost("/api/account/add", {
+    path: project.path, id,
+    name: $("newAccountName").value.trim(),
+    role: $("newAccountRole").value,
+    password,
+  });
+  $("newAccountPw").value = "";
+  $("accountAddStatus").textContent = r.ok ? "✓" : (r.error || "");
+  if (r.ok) {
+    $("newAccountId").value = "";
+    $("newAccountName").value = "";
+    await loadAccounts();
+  }
+}
+
+function refreshAccountBanner() {
+  const el = $("accountBanner");
+  if (!project) { el.style.display = "none"; return; }
+  if (project.account_required && !project.whoami) {
+    el.textContent = t().accountRequired;
+    el.style.display = "";
+  } else {
+    el.style.display = "none";
+  }
+}
+
 async function loadAccess() {
   $("accessTitle").textContent = t().accessTitle;
   $("accessNote").textContent = t().accessNote;
@@ -1016,6 +1193,9 @@ async function loadAccess() {
 
   $("accessProblems").textContent = (res.issues || []).join("\n");
   $("accessStatus").textContent = "";
+
+  // 账户区块（登录/建账户/改角色）
+  await loadAccounts();
 
   // 表单文案与"新建区域"的成员勾选框
   $("accessMemberTitle").textContent = t().accessMemberTitle;
@@ -1122,6 +1302,7 @@ async function lockAccess() {
 }
 
 async function loadTables() {
+  refreshAccountBanner();
   const el = $("dataCard");
   const tabsEl = el.querySelector(".tabs") || document.createElement("div");
   // 表切换按钮
@@ -1505,6 +1686,9 @@ $("entryCancel").onclick = () => show("entryForm", false);
 $("wizardBtn").onclick = createProject;
 $("accessUnlockBtn").onclick = unlockAccess;
 $("accessLockBtn").onclick = lockAccess;
+$("accountLoginBtn").onclick = loginAccount;
+$("accountLogoutBtn").onclick = logoutAccount;
+$("accountAddBtn").onclick = addAccount;
 $("addMemberBtn").onclick = addMember;
 $("createZoneBtn").onclick = createZone;
 $("packBtn").onclick = () => doPack(false);

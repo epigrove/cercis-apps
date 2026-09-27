@@ -73,6 +73,20 @@ pub fn handle(req: &Request) -> Response {
                     let template = p
                         .template()
                         .unwrap_or_else(|_| cercis_core::Template::generic());
+                    // 多人项目：把"要不要登录"告诉界面（有账户但没登录时写入会被拒）
+                    let account_required = cercis_core::accounts::Accounts::load(p.root())
+                        .map(|a| a.enabled())
+                        .unwrap_or(false);
+                    let whoami = cercis_core::accounts::current(p.root())
+                        .ok()
+                        .flatten()
+                        .map(|s| {
+                            json!({
+                                "id": s.id,
+                                "role": s.role,
+                                "expires": s.expires,
+                            })
+                        });
                     let mut tables = Vec::new();
                     for t in &template.tables {
                         // 走内核的存储层：加密区域里的表在磁盘上是密文，
@@ -100,6 +114,8 @@ pub fn handle(req: &Request) -> Response {
                             "root": p.root().display().to_string(),
                             "template": template.name,
                             "language": if lang == Lang::Zh { "zh" } else { "en" },
+                            "account_required": account_required,
+                            "whoami": whoami,
                             "tables": tables,
                         })
                         .to_string(),
@@ -560,6 +576,183 @@ pub fn handle(req: &Request) -> Response {
         }
 
         // 加密区域管理：建成员 / 建区域 / 授权 / 移除（S13 表单用；口令只在一次请求里用）
+        // 多人账户（FR-N08/N09）：看、登录、登出、建账户、改角色、删账户
+        "/api/account" => {
+            let Some(path) = req.query.get("path") else {
+                return Response::error(400, lang.t("缺少 path 参数", "missing path parameter"));
+            };
+            let root = std::path::Path::new(path);
+            let accounts = cercis_core::accounts::list(root).unwrap_or_default();
+            let session = cercis_core::accounts::current(root).ok().flatten();
+            Response::json(
+                &json!({
+                    "ok": true,
+                    "enabled": !accounts.is_empty(),
+                    "whoami": session.map(|s| json!({
+                        "id": s.id, "role": s.role, "expires": s.expires,
+                    })),
+                    "accounts": accounts.iter().map(|a| json!({
+                        "id": a.id,
+                        "display_name": a.display_name,
+                        "role": a.role,
+                        "note": a.note,
+                    })).collect::<Vec<_>>(),
+                    "keychain_available": cercis_core::keychain::available(),
+                })
+                .to_string(),
+            )
+        }
+
+        "/api/account/login" => {
+            if req.method != "POST" {
+                return Response::error(400, "POST only");
+            }
+            let body: Value = match serde_json::from_str(&req.body) {
+                Ok(v) => v,
+                Err(e) => return Response::error(400, &format!("body 不是 JSON：{e}")),
+            };
+            let path = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let password = body.get("password").and_then(|v| v.as_str()).unwrap_or("");
+            if path.is_empty() || id.is_empty() || password.is_empty() {
+                return Response::error(
+                    400,
+                    lang.t("需要 path、id 与口令", "path, id and password are required"),
+                );
+            }
+            let ttl = body
+                .get("ttl_hours")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(12);
+            match cercis_core::accounts::login(
+                std::path::Path::new(path),
+                id,
+                password,
+                cercis_core::crypto::KdfParams::from_env(),
+                ttl,
+            ) {
+                Ok(s) => Response::json(
+                    &json!({
+                        "ok": true, "id": s.id, "role": s.role, "expires": s.expires,
+                    })
+                    .to_string(),
+                ),
+                Err(e) => Response::error(400, &e.to_string()),
+            }
+        }
+
+        "/api/account/logout" => {
+            if req.method != "POST" {
+                return Response::error(400, "POST only");
+            }
+            let body: Value = match serde_json::from_str(&req.body) {
+                Ok(v) => v,
+                Err(e) => return Response::error(400, &format!("body 不是 JSON：{e}")),
+            };
+            let path = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            if path.is_empty() {
+                return Response::error(400, lang.t("缺少 path", "missing path"));
+            }
+            match cercis_core::accounts::logout(std::path::Path::new(path)) {
+                Ok(removed) => {
+                    Response::json(&json!({ "ok": true, "logged_out": removed }).to_string())
+                }
+                Err(e) => Response::error(400, &e.to_string()),
+            }
+        }
+
+        "/api/account/add" => {
+            if req.method != "POST" {
+                return Response::error(400, "POST only");
+            }
+            let body: Value = match serde_json::from_str(&req.body) {
+                Ok(v) => v,
+                Err(e) => return Response::error(400, &format!("body 不是 JSON：{e}")),
+            };
+            let path = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let name = body.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let role = body.get("role").and_then(|v| v.as_str()).unwrap_or("editor");
+            let password = body.get("password").and_then(|v| v.as_str()).unwrap_or("");
+            if path.is_empty() || id.is_empty() || password.is_empty() {
+                return Response::error(
+                    400,
+                    lang.t("需要 path、id 与口令", "path, id and password are required"),
+                );
+            }
+            let role = match cercis_core::Role::parse(role) {
+                Ok(r) => r,
+                Err(e) => return Response::error(400, &e.to_string()),
+            };
+            match cercis_core::accounts::add(
+                std::path::Path::new(path),
+                id,
+                name,
+                role,
+                password,
+                cercis_core::crypto::KdfParams::from_env(),
+                "",
+            ) {
+                Ok(a) => Response::json(
+                    &json!({ "ok": true, "id": a.id, "role": a.role }).to_string(),
+                ),
+                Err(e) => Response::error(400, &e.to_string()),
+            }
+        }
+
+        "/api/account/role" => {
+            if req.method != "POST" {
+                return Response::error(400, "POST only");
+            }
+            let body: Value = match serde_json::from_str(&req.body) {
+                Ok(v) => v,
+                Err(e) => return Response::error(400, &format!("body 不是 JSON：{e}")),
+            };
+            let path = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let role = body.get("role").and_then(|v| v.as_str()).unwrap_or("viewer");
+            let actor = body
+                .get("as")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty());
+            if path.is_empty() || id.is_empty() {
+                return Response::error(400, lang.t("需要 path 与 id", "path and id are required"));
+            }
+            let role = match cercis_core::Role::parse(role) {
+                Ok(r) => r,
+                Err(e) => return Response::error(400, &e.to_string()),
+            };
+            match cercis_core::accounts::set_role(std::path::Path::new(path), id, role, actor) {
+                Ok(a) => Response::json(
+                    &json!({ "ok": true, "id": a.id, "role": a.role }).to_string(),
+                ),
+                Err(e) => Response::error(400, &e.to_string()),
+            }
+        }
+
+        "/api/account/remove" => {
+            if req.method != "POST" {
+                return Response::error(400, "POST only");
+            }
+            let body: Value = match serde_json::from_str(&req.body) {
+                Ok(v) => v,
+                Err(e) => return Response::error(400, &format!("body 不是 JSON：{e}")),
+            };
+            let path = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let actor = body
+                .get("as")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty());
+            if path.is_empty() || id.is_empty() {
+                return Response::error(400, lang.t("需要 path 与 id", "path and id are required"));
+            }
+            match cercis_core::accounts::remove(std::path::Path::new(path), id, actor) {
+                Ok(()) => Response::json(&json!({ "ok": true, "removed": id }).to_string()),
+                Err(e) => Response::error(400, &e.to_string()),
+            }
+        }
+
         "/api/access/member" => {
             if req.method != "POST" {
                 return Response::error(400, "POST only");
@@ -1868,6 +2061,98 @@ mod tests {
         assert_eq!(body["ok"], true, "{body}");
         assert_eq!(body["generation"], 2);
         assert_eq!(body["reencrypted"], 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// FR-N08/N09：app 里的账户——建、登录、看、改角色、删；打开项目时告诉界面要不要登录。
+    #[test]
+    fn account_endpoints_login_and_gate_writes() {
+        let dir = std::env::temp_dir().join("cercis-app-account-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = share_env();
+        let project = dir.join("proj");
+        let p = cercis_core::Project::create(&project, "多人试验", Default::default()).unwrap();
+        let path = project.to_str().unwrap();
+
+        // 开放模式：写得了，打开项目时 account_required=false
+        let mut row = cercis_core::table::Row::new();
+        row.insert("record_id".into(), "R-1".into());
+        p.store
+            .append_row_extending("records", &[], row.clone(), "R-1", "开放模式写入")
+            .unwrap();
+        let res = handle(&req("GET", "/api/open", &[("path", path)], ""));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["account_required"], false);
+        assert!(body["whoami"].is_null());
+
+        // 建第一个账户（必须是管理员）
+        let res = handle(&req(
+            "POST",
+            "/api/account/add",
+            &[],
+            &format!(
+                r#"{{"path":"{path}","id":"alice","name":"张老师","role":"admin","password":"pw-a"}}"#
+            ),
+        ));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["ok"], true, "{body}");
+
+        // 现在：打开项目会说"要登录"，没登录写不了
+        let res = handle(&req("GET", "/api/open", &[("path", path)], ""));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["account_required"], true);
+        assert!(body["whoami"].is_null(), "还没登录：{body}");
+        let err = p
+            .store
+            .append_row_extending("records", &[], row.clone(), "R-2", "没登录")
+            .unwrap_err();
+        assert!(err.to_string().contains("登录"), "{err}");
+
+        // 口令错了：登录失败且不建立登录态
+        let res = handle(&req(
+            "POST",
+            "/api/account/login",
+            &[],
+            &format!(r#"{{"path":"{path}","id":"alice","password":"wrong"}}"#),
+        ));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["ok"], false);
+        assert!(cercis_core::accounts::current(&project).unwrap().is_none());
+
+        // 正确口令：能登录，写入放行
+        let res = handle(&req(
+            "POST",
+            "/api/account/login",
+            &[],
+            &format!(r#"{{"path":"{path}","id":"alice","password":"pw-a"}}"#),
+        ));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["ok"], true, "{body}");
+        assert_eq!(body["role"], "admin");
+        p.store
+            .append_row_extending("records", &[], row, "R-2", "登录后写入")
+            .unwrap();
+
+        // 账户列表能看，且没有明文口令
+        let res = handle(&req("GET", "/api/account", &[("path", path)], ""));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["enabled"], true);
+        assert_eq!(body["accounts"][0]["id"], "alice");
+        assert_eq!(body["whoami"]["id"], "alice");
+        let text = std::fs::read_to_string(project.join("access/accounts.yaml")).unwrap();
+        assert!(!text.contains("pw-a"), "不能存明文口令");
+
+        // 退出登录：又写不了了
+        let res = handle(&req(
+            "POST",
+            "/api/account/logout",
+            &[],
+            &format!(r#"{{"path":"{path}"}}"#),
+        ));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["ok"], true);
+        assert!(cercis_core::accounts::current(&project).unwrap().is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
