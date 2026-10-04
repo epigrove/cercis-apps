@@ -138,11 +138,19 @@ pub fn handle(req: &Request) -> Response {
                 .query
                 .get("limit")
                 .and_then(|s| s.parse::<usize>().ok())
-                .unwrap_or(100);
+                .unwrap_or(200)
+                .min(5000);
+            // 分页：大表不一次全丢给浏览器（渲染卡顿主要来自 DOM，不是读 CSV）
+            let offset = req
+                .query
+                .get("offset")
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(0);
 
             match Project::open(path, None) {
                 Ok(p) => {
-                    let mut q = Query::new().page(0, limit);
+                    // 先不带分页跑一遍拿总数（筛选后的总数才是用户想看的）
+                    let mut q = Query::new();
                     // 可选排序
                     if let Some(sort) = req.query.get("sort") {
                         let (col, dir) = match sort.split_once(':') {
@@ -174,8 +182,11 @@ pub fn handle(req: &Request) -> Response {
                         }
                     }
 
-                    match p.query(table, q) {
-                        Ok(rows) => {
+                    let mut q_all = q.clone();
+                    q = q.page(offset, limit);
+                    match (p.query(table, q), p.query(table, q_all.clone())) {
+                        (Ok(rows), Ok(all)) => {
+                            let total = all.len();
                             let table_def = p.template().ok().and_then(|t| t.table(table).cloned());
                             let columns = table_def
                                 .as_ref()
@@ -199,12 +210,15 @@ pub fn handle(req: &Request) -> Response {
                                     "table": table,
                                     "columns": columns,
                                     "count": rows.len(),
+                                    "total": total,
+                                    "offset": offset,
+                                    "limit": limit,
                                     "rows": rows,
                                 })
                                 .to_string(),
                             )
                         }
-                        Err(e) => Response::error(400, &e.to_string()),
+                        (Err(e), _) | (_, Err(e)) => Response::error(400, &e.to_string()),
                     }
                 }
                 Err(e) => Response::error(404, &e.to_string()),
@@ -2981,6 +2995,84 @@ mod tests {
         ));
         let body: Value = serde_json::from_str(&res.body).unwrap();
         assert_eq!(body["ok"], true);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 大表：分页（offset/limit/total）与排序（点表头走的就是这个接口参数）。
+    #[test]
+    fn table_endpoint_paginates_and_sorts() {
+        let dir = std::env::temp_dir().join("cercis-app-page-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = share_env();
+        let project = dir.join("proj");
+        let p = cercis_core::Project::create(&project, "大表试验", Default::default()).unwrap();
+        let mut rows = Vec::new();
+        for i in 0..250 {
+            let mut row = cercis_core::table::Row::new();
+            row.insert("record_id".into(), format!("R-{i:04}"));
+            row.insert("value_num".into(), i.to_string());
+            rows.push(row);
+        }
+        p.store
+            .append_rows("records", &[], rows, "import", "批量造 250 行", "test")
+            .unwrap();
+        let path = project.to_str().unwrap();
+
+        // 第一页
+        let res = handle(&req(
+            "GET",
+            "/api/table",
+            &[("path", path), ("table", "records"), ("limit", "100"), ("offset", "0")],
+            "",
+        ));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["count"], 100);
+        assert_eq!(body["total"], 250);
+        assert_eq!(body["offset"], 0);
+        assert_eq!(body["rows"][0]["record_id"], "R-0000");
+
+        // 第三页
+        let res = handle(&req(
+            "GET",
+            "/api/table",
+            &[("path", path), ("table", "records"), ("limit", "100"), ("offset", "200")],
+            "",
+        ));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["count"], 50, "最后一页只有 50 行");
+        assert_eq!(body["rows"][0]["record_id"], "R-0200");
+
+        // 排序：value_num 倒序，第一行应该是 249
+        let res = handle(&req(
+            "GET",
+            "/api/table",
+            &[
+                ("path", path),
+                ("table", "records"),
+                ("limit", "3"),
+                ("sort", "value_num:desc"),
+            ],
+            "",
+        ));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["rows"][0]["value_num"], "249");
+        assert_eq!(body["total"], 250, "排序不影响总数");
+
+        // 筛选后的总数（total 是筛选后的口径）
+        let res = handle(&req(
+            "GET",
+            "/api/table",
+            &[
+                ("path", path),
+                ("table", "records"),
+                ("limit", "10"),
+                ("filter", "value_num:gt:240"),
+            ],
+            "",
+        ));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["total"], 9, "241..249 共 9 条：{body}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

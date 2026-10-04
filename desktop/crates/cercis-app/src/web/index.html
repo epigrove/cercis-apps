@@ -103,10 +103,22 @@
     <div class="row" style="justify-content: space-between;">
       <h2 id="tableTitle" style="margin:0;"></h2>
       <div class="row">
-        <input id="filterInput" placeholder="筛选：列:运算符:值（如 value_num:gt:20）" style="width:300px" />
-        <button id="refreshBtn">刷新</button>
+        <input id="filterInput" aria-label="筛选" placeholder="筛选：列:运算符:值（如 value_num:gt:20）" style="width:300px" />
+        <button id="refreshBtn" aria-label="刷新">刷新</button>
         <span class="status" id="rowCount"></span>
       </div>
+    </div>
+    <div class="row" style="margin-top:6px;">
+      <button id="pagePrev" aria-label="上一页">‹ 上一页</button>
+      <span class="muted" id="pageInfo"></span>
+      <button id="pageNext" aria-label="下一页">下一页 ›</button>
+      <select id="pageSize" aria-label="每页行数" style="width:110px;">
+        <option value="100">100 行/页</option>
+        <option value="200" selected>200 行/页</option>
+        <option value="500">500 行/页</option>
+        <option value="2000">2000 行/页</option>
+      </select>
+      <span class="muted" id="sortHint"></span>
     </div>
     <div class="row" id="pluginActions" style="margin-top:10px;"></div>
     <div class="muted" id="pluginHint" style="margin-top:6px;"></div>
@@ -514,6 +526,11 @@ const I18N = {
     accountRequired: "这个项目启用了账户：写入需要先登录（查看者只读、编辑者能写数据、管理员能改结构）。去「加密区域」页登录。",
     accountGrant: "改角色",
     accountRemove: "删除",
+    pageInfo: "第 {from}–{to} 行 / 共 {total} 行",
+    sortHint: "排序：",
+    sortHintNone: "排序：未排序（点表头）",
+    sortBy: "按这一列排序",
+    hasMore: "先显示前若干行",
     // 待办（tasks.csv，§5.2.11）
     todosTitle: "今天 / 本周 / 逾期",
     todosNote: "数据来自 tables/tasks.csv；勾选完成会同时改当前行（前值进历史对象库）并写一条更正记录，随时可还原。",
@@ -682,6 +699,11 @@ const I18N = {
     accountRequired: "This project uses accounts: writing requires signing in (viewer = read-only, editor = data writes, admin = structure & plugins). Sign in on the Encrypted zones page.",
     accountGrant: "Set role",
     accountRemove: "Delete",
+    pageInfo: "rows {from}–{to} of {total}",
+    sortHint: "sort: ",
+    sortHintNone: "sort: none (click a header)",
+    sortBy: "sort by this column",
+    hasMore: "showing the first rows",
     // To-dos (tasks.csv)
     todosTitle: "Overdue / today / this week",
     todosNote: "Data lives in tables/tasks.csv. Ticking a task updates the row (the previous value goes to the history store) and writes a correction record, so it can always be undone.",
@@ -738,6 +760,9 @@ let project = null;
 let activeTable = null;
 let plugins = [];          // 插件清单缓存（含命令与可运行状态）
 let currentColumns = [];   // 当前表的列（录入表单用）
+let pageOffset = 0;        // 当前页起点
+let pageTotal = 0;         // 筛选后的总行数
+let sortSpec = "";         // 排序：列:asc|desc（点表头切换）
 
 const $ = (id) => document.getElementById(id);
 
@@ -762,6 +787,8 @@ function setLang(next) {
   $("openBtn").textContent = t().open;
   $("projectPath").placeholder = t().placeholder;
   $("filterInput").placeholder = t().filterPh;
+  $("filterInput").setAttribute("aria-label", t().filterPh);
+  $("refreshBtn").setAttribute("aria-label", t().refresh);
   $("refreshBtn").textContent = t().refresh;
   $("validateBtn").textContent = t().validate;
   $("agentsBtn").textContent = t().agents;
@@ -1719,29 +1746,61 @@ async function loadTables() {
     const b = document.createElement("div");
     b.className = "tab" + (tb.name === activeTable ? " active" : "");
     b.textContent = tb.label || tb.name;
-    b.onclick = () => { activeTable = tb.name; loadTables(); };
+    b.tabIndex = 0;
+    b.setAttribute("role", "tab");
+    b.onclick = () => { activeTable = tb.name; pageOffset = 0; sortSpec = ""; loadTables(); };
+    b.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); activeTable = tb.name; pageOffset = 0; loadTables(); } };
     tableBar.appendChild(b);
   }
   if (!activeTable && project.tables.length) activeTable = project.tables[0].name;
   if (!activeTable) return;
 
   const filter = $("filterInput").value.trim();
-  const params = { path: project.path, table: activeTable, limit: 200 };
+  const size = Number($("pageSize").value || 200);
+  const params = {
+    path: project.path, table: activeTable,
+    limit: size, offset: pageOffset,
+  };
   if (filter) params.filter = filter;
+  if (sortSpec) params.sort = sortSpec;
   const res = await apiGet("/api/table", params);
   $("tableTitle").textContent = activeTable;
   if (!res.ok) {
     $("dataTable").querySelector("tbody").innerHTML = `<tr><td>${res.error||""}</td></tr>`;
     return;
   }
-  $("rowCount").textContent = res.count + " " + t().rows;
+  pageTotal = res.total || res.count || 0;
+  const from = pageTotal === 0 ? 0 : pageOffset + 1;
+  const to = pageOffset + (res.count || 0);
+  $("rowCount").textContent = `${pageTotal} ${t().rows}`;
+  $("pageInfo").textContent = t().pageInfo
+    .replace("{from}", from).replace("{to}", to).replace("{total}", pageTotal);
+  $("pagePrev").disabled = pageOffset <= 0;
+  $("pageNext").disabled = to >= pageTotal;
+  $("sortHint").textContent = sortSpec ? `${t().sortHint}${sortSpec}` : t().sortHintNone;
   currentColumns = res.columns || [];
   renderPluginActions();
   const thead = $("dataTable").querySelector("thead");
   const tbody = $("dataTable").querySelector("tbody");
-  thead.innerHTML = "<tr>" + res.columns.map(c =>
-    `<th>${c.label || c.name}${c.unit ? ' <span class="muted">('+c.unit+')</span>' : ''}<br><span class="muted">${c.name}</span></th>`
-  ).join("") + "</tr>";
+  thead.innerHTML = "<tr>" + res.columns.map(c => {
+    const cur = sortSpec.startsWith(c.name + ":") ? sortSpec.split(":")[1] : "";
+    const arrow = cur === "asc" ? " ↑" : (cur === "desc" ? " ↓" : "");
+    return `<th scope="col" tabindex="0" role="button" aria-label="${t().sortBy} ${c.name}" data-col="${c.name}" style="cursor:pointer; user-select:none;">`
+      + `${c.label || c.name}${arrow}${c.unit ? ' <span class="muted">('+c.unit+')</span>' : ''}`
+      + `<br><span class="muted">${c.name}</span></th>`;
+  }).join("") + "</tr>";
+  // 点表头排序（键盘也能用：Enter / 空格）
+  for (const th of thead.querySelectorAll("th[data-col]")) {
+    const act = () => {
+      const col = th.dataset.col;
+      const cur = sortSpec === col + ":asc" ? "desc" : "asc";
+      sortSpec = col + ":" + cur;
+      pageOffset = 0;
+      loadTables();
+    };
+    th.onclick = act;
+    th.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); act(); } };
+  }
   tbody.innerHTML = res.rows.length ? res.rows.map(r =>
     "<tr>" + res.columns.map(c => `<td>${(r[c.name] ?? "")}</td>`).join("") + "</tr>"
   ).join("") : `<tr><td class="empty" colspan="${res.columns.length}">${t().noRows}</td></tr>`;
@@ -2098,6 +2157,17 @@ $("mergeDryBtn").onclick = () => doMerge(true);
 $("reportsBtn").onclick = loadReports;
 $("reportViewBtn").onclick = viewReport;
 $("syncBtn").onclick = doSync;
+$("pagePrev").onclick = () => {
+  const size = Number($("pageSize").value || 200);
+  pageOffset = Math.max(0, pageOffset - size);
+  loadTables();
+};
+$("pageNext").onclick = () => {
+  const size = Number($("pageSize").value || 200);
+  if (pageOffset + size < pageTotal) { pageOffset += size; loadTables(); }
+};
+$("pageSize").onchange = () => { pageOffset = 0; loadTables(); };
+$("filterInput").addEventListener("keydown", (e) => { if (e.key === "Enter") { pageOffset = 0; loadTables(); } });
 $("todoAddBtn").onclick = addTodo;
 $("logFilterBtn").onclick = loadHistory;
 $("recordHistoryBtn").onclick = loadRecordHistory;
