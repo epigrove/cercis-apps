@@ -764,6 +764,113 @@ pub fn handle(req: &Request) -> Response {
             }
         }
 
+        // ———— 录入员（S9 后续）：会话列表、会话详情（草稿 + 逐格置信度 + 原音原图）———
+        "/api/scribe/sessions" => {
+            let Some(path) = req.query.get("path") else {
+                return Response::error(400, lang.t("缺少 path 参数", "missing path parameter"));
+            };
+            match scribe_sessions(std::path::Path::new(path)) {
+                Ok(list) => Response::json(
+                    &json!({ "ok": true, "sessions": list }).to_string(),
+                ),
+                Err(e) => Response::error(400, &e.to_string()),
+            }
+        }
+
+        "/api/scribe/session" => {
+            let Some(path) = req.query.get("path") else {
+                return Response::error(400, lang.t("缺少 path 参数", "missing path parameter"));
+            };
+            let Some(id) = req.query.get("id") else {
+                return Response::error(400, lang.t("缺少 id 参数", "missing id parameter"));
+            };
+            match scribe_session(std::path::Path::new(path), id) {
+                Ok(v) => Response::json(&v.to_string()),
+                Err(e) => Response::error(400, &e.to_string()),
+            }
+        }
+
+        // 让界面能播放会话目录里的原音、看原图（只允许项目内的 _labnote/scribe 与 media）
+        "/api/media" => {
+            let Some(path) = req.query.get("path") else {
+                return Response::error(400, lang.t("缺少 path 参数", "missing path parameter"));
+            };
+            let Some(file) = req.query.get("file") else {
+                return Response::error(400, lang.t("缺少 file 参数", "missing file parameter"));
+            };
+            match crate::http::read_project_media(std::path::Path::new(path), file) {
+                Ok((bytes, ctype)) => Response {
+                    status: 200,
+                    content_type: ctype,
+                    body: bytes,
+                },
+                Err(e) => Response::error(400, &e),
+            }
+        }
+
+        // 复核后确认入库：走插件本体（它再走内核 append-many）
+        "/api/scribe/commit" => {
+            if req.method != "POST" {
+                return Response::error(400, "POST only");
+            }
+            let body: Value = match serde_json::from_str(&req.body) {
+                Ok(v) => v,
+                Err(e) => return Response::error(400, &format!("body 不是 JSON：{e}")),
+            };
+            let path = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let session = body.get("session").and_then(|v| v.as_str()).unwrap_or("");
+            let note = body
+                .get("note")
+                .and_then(|v| v.as_str())
+                .unwrap_or("在 app 里复核后确认");
+            if path.is_empty() || session.is_empty() {
+                return Response::error(
+                    400,
+                    lang.t("需要 path 与 session", "path and session are required"),
+                );
+            }
+            let root = std::path::Path::new(path);
+            let found = match cercis_core::plugin::discover(root, crate::plugin_host::global_plugins_dir().as_deref()) {
+                Ok(f) => f,
+                Err(e) => return Response::error(400, &e.to_string()),
+            };
+            let Some(plugin) = found
+                .iter()
+                .find(|p| p.manifest.id == "research_scribe")
+            else {
+                return Response::error(
+                    404,
+                    lang.t(
+                        "没找到「田间录入员」插件（科研工具包）：先在插件市场装上它，再用命令行复核入库",
+                        "Scribe plugin not found: install the research kit from the market first",
+                    ),
+                );
+            };
+            let trusted = cercis_core::TrustRecord::load(root)
+                .unwrap_or_default()
+                .is_trusted(&plugin.manifest.id, &plugin.fingerprint);
+            let args = vec![
+                "--session".to_string(),
+                session.to_string(),
+                "--confirm".to_string(),
+                "--note".to_string(),
+                note.to_string(),
+                "--json".to_string(),
+            ];
+            match crate::plugin_host::run(root, plugin, trusted, "commit", &args) {
+                Ok(out) => Response::json(
+                    &json!({
+                        "ok": out.code == 0,
+                        "code": out.code,
+                        "stdout": tail(&out.stdout, 4000),
+                        "stderr": tail(&out.stderr, 2000),
+                    })
+                    .to_string(),
+                ),
+                Err(e) => Response::error(400, &e),
+            }
+        }
+
         // ———— NAS（FR-N01–N07）：网络位置、体检、写租约、工作副本 ————
         "/api/remote" => {
             let Some(path) = req.query.get("path") else {
@@ -2190,6 +2297,160 @@ fn desired_diff(project: &str, desired: &cercis_core::Desired) -> cercis_core::D
     cercis_core::desired::diff(desired, &installs, &state, &known)
 }
 
+/// 录入员会话列表：扫 `_labnote/scribe/*/session.json`（S9 后续：界面看得到田里录了什么）。
+fn scribe_sessions(root: &std::path::Path) -> Result<Value, cercis_core::CercisError> {
+    let base = root.join("_labnote/scribe");
+    let mut out = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&base) {
+        for e in rd.flatten() {
+            let dir = e.path();
+            if !dir.is_dir() {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(dir.join("session.json")) else {
+                continue;
+            };
+            let Ok(meta) = serde_json::from_str::<Value>(&text) else {
+                continue;
+            };
+            out.push(json!({
+                "session": e.file_name().to_string_lossy().to_string(),
+                "label": meta.get("label").and_then(|v| v.as_str()).unwrap_or(""),
+                "created_at": meta.get("created_at").and_then(|v| v.as_str()).unwrap_or(""),
+                "status": meta.get("status").and_then(|v| v.as_str()).unwrap_or(""),
+                "mode": meta.get("mode").and_then(|v| v.as_str()).unwrap_or(""),
+                "table": meta.get("table").and_then(|v| v.as_str()).unwrap_or(""),
+                "rows": meta.get("rows").and_then(|v| v.as_u64()).unwrap_or(0),
+                "must_confirm": meta.get("must_confirm").and_then(|v| v.as_u64()).unwrap_or(0),
+                "low_confidence": meta.get("low_confidence").and_then(|v| v.as_u64()).unwrap_or(0),
+                "model": meta.get("model_name").and_then(|v| v.as_str()).unwrap_or(""),
+                "audio": media_files(root, &dir.join("原音")),
+                "images": media_files(root, &dir.join("原图")),
+            }));
+        }
+    }
+    out.sort_by(|a, b| {
+        b["session"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(a["session"].as_str().unwrap_or(""))
+    });
+    Ok(Value::Array(out))
+}
+
+/// 会话里某个媒体目录下的文件（返回项目内相对路径，界面用它拼 /api/media）。
+fn media_files(root: &std::path::Path, dir: &std::path::Path) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_file() {
+                if let Ok(rel) = p.strip_prefix(root) {
+                    out.push(rel.to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// 一个会话的详情：草稿表 + 逐格置信度 + 待确认清单 + 原音原图（复核用）。
+fn scribe_session(root: &std::path::Path, id: &str) -> Result<Value, cercis_core::CercisError> {
+    if id.contains('/') || id.contains("..") {
+        return Err(cercis_core::CercisError::Invalid("会话 id 不合法".into()));
+    }
+    let dir = root.join("_labnote/scribe").join(id);
+    let meta_text = std::fs::read_to_string(dir.join("session.json"))
+        .map_err(|_| cercis_core::CercisError::NotFound(format!("没有这个录入会话：{id}")))?;
+    let meta: Value = serde_json::from_str(&meta_text)
+        .map_err(|e| cercis_core::CercisError::Corrupt(format!("session.json 坏了：{e}")))?;
+
+    let mut table = meta
+        .get("table")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if table.is_empty() {
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                if let Some(stem) = name.strip_suffix(".draft.csv") {
+                    table = stem.to_string();
+                    break;
+                }
+            }
+        }
+    }
+
+    let draft_path = dir.join(format!("{table}.draft.csv"));
+    let (columns, rows, low_cells) = if draft_path.exists() {
+        let t = cercis_core::Table::load(&draft_path)?;
+        let conf: Value = std::fs::read_to_string(dir.join(format!("{table}.confidence.json")))
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or(Value::Null);
+        let mut cells: Vec<Value> = Vec::new();
+        let threshold = conf
+            .get("threshold")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.7);
+        if let Some(arr) = conf.get("rows").and_then(|v| v.as_array()) {
+            for r in arr {
+                let index = r.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
+                if let Some(map) = r.get("cells").and_then(|v| v.as_object()) {
+                    for (field, c) in map {
+                        // 只把"低置信度"的格子交给界面染色：高分的不用打扰复核的人
+                        let score = c.get("score").and_then(|v| v.as_f64()).unwrap_or(1.0);
+                        if score >= threshold {
+                            continue;
+                        }
+                        cells.push(json!({
+                            "index": index,
+                            "field": field,
+                            "score": score,
+                            "source": c.get("source"),
+                            "reason": c.get("reason"),
+                        }));
+                    }
+                }
+            }
+        }
+        cells.sort_by(|a, b| {
+            a["score"]
+                .as_f64()
+                .unwrap_or(1.0)
+                .partial_cmp(&b["score"].as_f64().unwrap_or(1.0))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        (t.columns.clone(), t.rows.clone(), cells)
+    } else {
+        (Vec::new(), Vec::new(), Vec::new())
+    };
+
+    let uncertain: Value = std::fs::read_to_string(dir.join(format!("{table}.uncertain.json")))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or(Value::Null);
+    let checklist = std::fs::read_to_string(dir.join("待确认.md"))
+        .map(|t| tail(&t, 6000))
+        .unwrap_or_default();
+
+    Ok(json!({
+        "ok": true,
+        "session": id,
+        "meta": meta,
+        "table": table,
+        "columns": columns,
+        "rows": rows,
+        "low_cells": low_cells,
+        "uncertain": uncertain,
+        "checklist": checklist,
+        "audio": media_files(root, &dir.join("原音")),
+        "images": media_files(root, &dir.join("原图")),
+    }))
+}
+
 /// 待办标准列（§5.2.11）。
 const TASK_COLUMNS: [&str; 9] = [
     "task_id",
@@ -2365,6 +2626,16 @@ fn default_market_id(repository: &str) -> String {
 mod tests {
     use super::*;
 
+    /// 响应体是字节（媒体路由要发二进制），测试里统一这样解析 JSON。
+    fn body_json(res: &Response) -> Value {
+        serde_json::from_slice(&res.body).unwrap_or_else(|e| {
+            panic!(
+                "不是 JSON：{e}\n{}",
+                String::from_utf8_lossy(&res.body)
+            )
+        })
+    }
+
     fn req(method: &str, path: &str, query: &[(&str, &str)], body: &str) -> Request {
         Request {
             method: method.to_string(),
@@ -2430,14 +2701,14 @@ mod tests {
 
         let path = project.to_str().unwrap();
         let res = handle(&req("GET", "/api/access", &[("path", path)], ""));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["ok"], true);
         assert_eq!(body["zones"][0]["zone"], "secret-records");
         assert_eq!(body["zones"][0]["files"], 1);
         assert_eq!(body["zones"][0]["permission"], Value::Null);
 
         let res = handle(&req("GET", "/api/open", &[("path", path)], ""));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         let records = body["tables"]
             .as_array()
             .unwrap()
@@ -2452,12 +2723,12 @@ mod tests {
             &[],
             &format!(r#"{{"path":"{path}","member":"alice","password":"alice-pw"}}"#),
         ));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["ok"], true, "{body}");
         assert_eq!(body["zones"][0]["permission"], "admin");
 
         let res = handle(&req("GET", "/api/open", &[("path", path)], ""));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         let records = body["tables"]
             .as_array()
             .unwrap()
@@ -2473,7 +2744,7 @@ mod tests {
             &[],
             &format!(r#"{{"path":"{path}"}}"#),
         ));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["ok"], true);
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -2517,7 +2788,7 @@ mod tests {
                 pack_dir.display()
             ),
         ));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["ok"], true, "{body}");
         assert!(pack_dir.join("pack.json").exists());
 
@@ -2532,7 +2803,7 @@ mod tests {
                 a.display()
             ),
         ));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["ok"], true, "{body}");
         assert!(body["summary"].as_str().unwrap().contains("并集"));
         let report = body["report_path"].as_str().unwrap().to_string();
@@ -2540,7 +2811,7 @@ mod tests {
 
         // 报告列表 + 读报告
         let res = handle(&req("GET", "/api/reports", &[("path", a.to_str().unwrap())], ""));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         let name = body["reports"][0]["name"].as_str().unwrap().to_string();
         assert!(name.starts_with("merge-report-"));
         let res = handle(&req(
@@ -2549,7 +2820,7 @@ mod tests {
             &[("path", a.to_str().unwrap()), ("file", &name)],
             "",
         ));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["ok"], true);
         assert!(body["text"].as_str().unwrap().contains("合并报告"));
 
@@ -2560,7 +2831,7 @@ mod tests {
             &[("path", a.to_str().unwrap()), ("file", "../project.yaml")],
             "",
         ));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["ok"], false);
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -2592,7 +2863,7 @@ mod tests {
                     r#"{{"path":"{path}","id":"{id}","name":"{id}","password":"{pw}"}}"#
                 ),
             ));
-            let body: Value = serde_json::from_str(&res.body).unwrap();
+            let body: Value = body_json(&res);
             assert_eq!(body["ok"], true, "{body}");
         }
 
@@ -2606,7 +2877,7 @@ mod tests {
                     "members":[{{"id":"alice","permission":"admin"}},{{"id":"bob","permission":"read"}}]}}"#
             ),
         ));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["ok"], true, "{body}");
         assert_eq!(body["generation"], 1);
         assert_eq!(body["encrypted"].as_array().unwrap().len(), 1);
@@ -2619,7 +2890,7 @@ mod tests {
             &[],
             &format!(r#"{{"path":"{path}","member":"alice","password":"alice-pw"}}"#),
         ));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["ok"], true, "{body}");
 
         let res = handle(&req(
@@ -2630,7 +2901,7 @@ mod tests {
                 r#"{{"path":"{path}","zone":"secret","member":"bob","permission":"write","as":"alice"}}"#
             ),
         ));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["ok"], true, "{body}");
         assert!(body["members"]
             .as_array()
@@ -2645,7 +2916,7 @@ mod tests {
             &[],
             &format!(r#"{{"path":"{path}","zone":"secret","member":"bob","as":"alice"}}"#),
         ));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["ok"], true, "{body}");
         assert_eq!(body["generation"], 2);
         assert_eq!(body["reencrypted"], 1);
@@ -2670,7 +2941,7 @@ mod tests {
             .append_row_extending("records", &[], row.clone(), "R-1", "开放模式写入")
             .unwrap();
         let res = handle(&req("GET", "/api/open", &[("path", path)], ""));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["account_required"], false);
         assert!(body["whoami"].is_null());
 
@@ -2683,12 +2954,12 @@ mod tests {
                 r#"{{"path":"{path}","id":"alice","name":"张老师","role":"admin","password":"pw-a"}}"#
             ),
         ));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["ok"], true, "{body}");
 
         // 现在：打开项目会说"要登录"，没登录写不了
         let res = handle(&req("GET", "/api/open", &[("path", path)], ""));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["account_required"], true);
         assert!(body["whoami"].is_null(), "还没登录：{body}");
         let err = p
@@ -2704,7 +2975,7 @@ mod tests {
             &[],
             &format!(r#"{{"path":"{path}","id":"alice","password":"wrong"}}"#),
         ));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["ok"], false);
         assert!(cercis_core::accounts::current(&project).unwrap().is_none());
 
@@ -2715,7 +2986,7 @@ mod tests {
             &[],
             &format!(r#"{{"path":"{path}","id":"alice","password":"pw-a"}}"#),
         ));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["ok"], true, "{body}");
         assert_eq!(body["role"], "admin");
         p.store
@@ -2724,7 +2995,7 @@ mod tests {
 
         // 账户列表能看，且没有明文口令
         let res = handle(&req("GET", "/api/account", &[("path", path)], ""));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["enabled"], true);
         assert_eq!(body["accounts"][0]["id"], "alice");
         assert_eq!(body["whoami"]["id"], "alice");
@@ -2738,7 +3009,7 @@ mod tests {
             &[],
             &format!(r#"{{"path":"{path}"}}"#),
         ));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["ok"], true);
         assert!(cercis_core::accounts::current(&project).unwrap().is_none());
 
@@ -2757,7 +3028,7 @@ mod tests {
 
         // 还没有 tasks.csv
         let res = handle(&req("GET", "/api/todos", &[("path", path)], ""));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["ok"], true);
         assert_eq!(body["exists"], false);
 
@@ -2776,12 +3047,12 @@ mod tests {
                 &[],
                 &format!(r#"{{"path":"{path}","title":"{title}","due_date":"{due}","priority":"高"}}"#),
             ));
-            let body: Value = serde_json::from_str(&res.body).unwrap();
+            let body: Value = body_json(&res);
             assert_eq!(body["ok"], true, "{body}");
         }
 
         let res = handle(&req("GET", "/api/todos", &[("path", path)], ""));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["exists"], true);
         assert_eq!(body["tasks"]["overdue"].as_array().unwrap().len(), 1);
         assert_eq!(body["tasks"]["today"].as_array().unwrap().len(), 1);
@@ -2797,13 +3068,13 @@ mod tests {
                 r#"{{"path":"{path}","task_id":"{overdue_id}","done":true}}"#
             ),
         ));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["ok"], true, "{body}");
         assert_eq!(body["old"], "待办");
         assert_eq!(body["new"], "已完成");
 
         let res = handle(&req("GET", "/api/todos", &[("path", path)], ""));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["tasks"]["overdue"].as_array().unwrap().len(), 0);
         assert_eq!(body["tasks"]["done"].as_array().unwrap().len(), 1);
 
@@ -2822,7 +3093,7 @@ mod tests {
             &[("path", path), ("table", "tasks"), ("id", &overdue_id)],
             "",
         ));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["ok"], true);
         assert_eq!(body["corrections"].as_array().unwrap().len(), 1);
         assert!(body["entries"].as_array().unwrap().len() >= 1);
@@ -2846,7 +3117,7 @@ mod tests {
         let path = project.to_str().unwrap();
 
         let res = handle(&req("GET", "/api/history", &[("path", path)], ""));
-        let all: Value = serde_json::from_str(&res.body).unwrap();
+        let all: Value = body_json(&res);
         assert!(all["count"].as_u64().unwrap() >= 2, "{all}");
 
         let res = handle(&req(
@@ -2855,7 +3126,7 @@ mod tests {
             &[("path", path), ("table", "records")],
             "",
         ));
-        let only_records: Value = serde_json::from_str(&res.body).unwrap();
+        let only_records: Value = body_json(&res);
         assert!(only_records["entries"]
             .as_array()
             .unwrap()
@@ -2868,7 +3139,7 @@ mod tests {
             &[("path", path), ("user", "查无此人")],
             "",
         ));
-        let none: Value = serde_json::from_str(&res.body).unwrap();
+        let none: Value = body_json(&res);
         assert_eq!(none["count"], 0);
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -2899,12 +3170,12 @@ mod tests {
                 r#"{{"path":"{main_s}","name":"nas","remote_path":"{main_s}","kind":"local"}}"#
             ),
         ));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["ok"], true, "{body}");
 
         // 列表里能看到，且认得出"可达"
         let res = handle(&req("GET", "/api/remote", &[("path", main_s)], ""));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["remotes"][0]["name"], "nas");
         assert_eq!(body["remotes"][0]["reachable"], true);
 
@@ -2915,7 +3186,7 @@ mod tests {
             &[("path", main_s), ("name", "nas")],
             "",
         ));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["ok"], true, "{body}");
         assert_eq!(body["test"]["writable"], true);
 
@@ -2926,10 +3197,10 @@ mod tests {
             &[],
             &format!(r#"{{"path":"{main_s}","who":"wenhuan@laptop","minutes":30}}"#),
         ));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["ok"], true, "{body}");
         let res = handle(&req("GET", "/api/remote", &[("path", main_s)], ""));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["leases"].as_array().unwrap().len(), 1);
         let res = handle(&req(
             "POST",
@@ -2937,7 +3208,7 @@ mod tests {
             &[],
             &format!(r#"{{"path":"{main_s}","who":"wenhuan@laptop"}}"#),
         ));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert!(body["cleared"].as_u64().unwrap() >= 1);
 
         // 工作副本：建 → 两边各自记 → 同步 → 两边都齐
@@ -2950,7 +3221,7 @@ mod tests {
                 copy.display()
             ),
         ));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["ok"], true, "{body}");
 
         let pc = cercis_core::Project::open(&copy, None).unwrap();
@@ -2967,7 +3238,7 @@ mod tests {
 
         let copy_s = copy.to_str().unwrap();
         let res = handle(&req("GET", "/api/workcopy", &[("path", copy_s)], ""));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["is_workcopy"], true);
         assert_eq!(body["status"]["verdict"], "needs-sync", "{body}");
 
@@ -2977,7 +3248,7 @@ mod tests {
             &[],
             &format!(r#"{{"copy":"{copy_s}","dry_run":false}}"#),
         ));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["ok"], true, "{body}");
         assert_eq!(body["conflicts_total"], 0);
 
@@ -2993,7 +3264,7 @@ mod tests {
             &[],
             &format!(r#"{{"path":"{main_s}","name":"nas"}}"#),
         ));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["ok"], true);
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -3026,7 +3297,7 @@ mod tests {
             &[("path", path), ("table", "records"), ("limit", "100"), ("offset", "0")],
             "",
         ));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["count"], 100);
         assert_eq!(body["total"], 250);
         assert_eq!(body["offset"], 0);
@@ -3039,7 +3310,7 @@ mod tests {
             &[("path", path), ("table", "records"), ("limit", "100"), ("offset", "200")],
             "",
         ));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["count"], 50, "最后一页只有 50 行");
         assert_eq!(body["rows"][0]["record_id"], "R-0200");
 
@@ -3055,7 +3326,7 @@ mod tests {
             ],
             "",
         ));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["rows"][0]["value_num"], "249");
         assert_eq!(body["total"], 250, "排序不影响总数");
 
@@ -3071,8 +3342,114 @@ mod tests {
             ],
             "",
         ));
-        let body: Value = serde_json::from_str(&res.body).unwrap();
+        let body: Value = body_json(&res);
         assert_eq!(body["total"], 9, "241..249 共 9 条：{body}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 录入员：会话列表 / 详情（草稿+逐格置信度+原音原图）/ 媒体读取的安全边界。
+    #[test]
+    fn scribe_endpoints_list_sessions_and_guard_media() {
+        let dir = std::env::temp_dir().join("cercis-app-scribe-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = share_env();
+        let project = dir.join("proj");
+        cercis_core::Project::create(&project, "录入员试验", Default::default()).unwrap();
+        // 造一个像模像样的会话目录（内容与 scribe 插件写出来的一致）
+        let sdir = project.join("_labnote/scribe/20261004-101010-abcd");
+        std::fs::create_dir_all(sdir.join("原音")).unwrap();
+        std::fs::create_dir_all(sdir.join("原图")).unwrap();
+        std::fs::write(
+            sdir.join("session.json"),
+            serde_json::to_string_pretty(&json!({
+                "schema": "cercis.scribe_session/1",
+                "session_id": "20261004-101010-abcd",
+                "label": "小区 3 号地",
+                "created_at": "2026-10-04T10:10:10Z",
+                "status": "draft",
+                "mode": "offline",
+                "table": "observations",
+                "rows": 1,
+                "must_confirm": 1,
+                "low_confidence": 2,
+                "model_name": "fake-model"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            sdir.join("observations.draft.csv"),
+            "obs_id,sample_id,value_num\nOB-1,S-1,62.3\n",
+        )
+        .unwrap();
+        std::fs::write(
+            sdir.join("observations.confidence.json"),
+            serde_json::to_string_pretty(&json!({
+                "format": "cercis-scribe-confidence/1",
+                "threshold": 0.7,
+                "rows": [{
+                    "index": 1,
+                    "cells": {
+                        "value_num": {"score": 0.45, "source": "model", "reason": "听不清 62.3 还是 60.3", "value": "62.3"},
+                        "sample_id": {"score": 0.95, "source": "heuristic", "reason": "普通文本", "value": "S-1"}
+                    }
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(sdir.join("待确认.md"), "第 1 条 value_num：听不清\n").unwrap();
+        std::fs::write(sdir.join("原音/录音.m4a"), b"fake-audio-bytes").unwrap();
+        std::fs::write(sdir.join("原图/手稿.png"), b"fake-png").unwrap();
+        let path = project.to_str().unwrap();
+
+        // 列表
+        let res = handle(&req("GET", "/api/scribe/sessions", &[("path", path)], ""));
+        let body: Value = body_json(&res);
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["sessions"][0]["session"], "20261004-101010-abcd");
+        assert_eq!(body["sessions"][0]["low_confidence"], 2);
+        assert_eq!(body["sessions"][0]["audio"].as_array().unwrap().len(), 1);
+
+        // 详情：草稿 + 置信度 + 原音原图
+        let res = handle(&req(
+            "GET",
+            "/api/scribe/session",
+            &[("path", path), ("id", "20261004-101010-abcd")],
+            "",
+        ));
+        let body: Value = body_json(&res);
+        assert_eq!(body["ok"], true, "{body}");
+        assert_eq!(body["table"], "observations");
+        assert_eq!(body["rows"][0]["value_num"], "62.3");
+        // 低置信度排在前面
+        assert_eq!(body["low_cells"][0]["field"], "value_num");
+        assert_eq!(body["low_cells"][0]["score"], 0.45);
+        assert_eq!(body["audio"].as_array().unwrap().len(), 1);
+        assert_eq!(body["images"].as_array().unwrap().len(), 1);
+        assert!(body["checklist"].as_str().unwrap().contains("听不清"));
+
+        // 媒体：允许会话目录里的文件
+        let (bytes, ctype) = crate::http::read_project_media(
+            &project,
+            "_labnote/scribe/20261004-101010-abcd/原图/手稿.png",
+        )
+        .unwrap();
+        assert_eq!(bytes, b"fake-png");
+        assert_eq!(ctype, "image/png");
+        // 不许读项目里的其它东西（比如表、密钥、任意路径）
+        for bad in [
+            "tables/records.csv",
+            "access/accounts.yaml",
+            "../secrets.txt",
+            "_labnote/scribe/../../project.yaml",
+        ] {
+            assert!(
+                crate::http::read_project_media(&project, bad).is_err(),
+                "不该允许读 {bad}"
+            );
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }

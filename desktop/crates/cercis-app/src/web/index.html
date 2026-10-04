@@ -258,6 +258,18 @@
     <pre class="muted" id="accessProblems" style="white-space:pre-wrap;"></pre>
   </div>
 
+  <div class="card" id="scribeCard" style="display:none;">
+    <h2 id="scribeTitle"></h2>
+    <p class="muted" id="scribeNote"></p>
+    <div class="row" style="margin-top:8px;">
+      <button id="scribeReloadBtn"></button>
+      <span class="status" id="scribeStatus"></span>
+    </div>
+    <div id="scribeSessions" style="margin-top:8px;"></div>
+    <div id="scribeDetail" style="margin-top:12px;"></div>
+    <div class="muted" id="scribeHelp" style="margin-top:10px;"></div>
+  </div>
+
   <div class="card" id="transferCard" style="display:none;">
     <h2 id="transferTitle"></h2>
     <p class="muted" id="transferNote"></p>
@@ -410,7 +422,7 @@ const I18N = {
   zh: {
     slogan: "愿瑟希斯捍卫你的思想。",
     open: "打开项目", placeholder: "项目文件夹路径",
-    tabs: { data: "数据", plugins: "插件", market: "插件市场", access: "加密区域", transfer: "搬运", log: "变更流水", tools: "工具", todos: "待办" },
+    tabs: { data: "数据", scribe: "录入员", plugins: "插件", market: "插件市场", access: "加密区域", transfer: "搬运", log: "变更流水", tools: "工具", todos: "待办" },
     rows: "行", refresh: "刷新", filterPh: "筛选：列:运算符:值（如 value_num:gt:20）",
     trust: "信任并启用", revoke: "撤销信任", trusted: "已信任", untrusted: "未信任",
     validate: "校验项目", agents: "刷新 AI 材料（AGENTS.md）", manifest: "生成机器清单",
@@ -531,6 +543,21 @@ const I18N = {
     sortHintNone: "排序：未排序（点表头）",
     sortBy: "按这一列排序",
     hasMore: "先显示前若干行",
+    // 录入员（S9 后续）
+    scribeTitle: "田间录入员（语音 / 手稿）",
+    scribeNote: "会话在 _labnote/scribe/ 下：确认前主表一个字节都不动。这里能重放原音、放大原图、看逐格置信度（黄=偏低、红=很低，鼠标悬停看原因），确认后入库走插件 → 内核 append-many。",
+    scribeReload: "刷新会话",
+    scribeSession: "会话",
+    scribeCreated: "时间",
+    scribeState: "状态",
+    scribeRows: "行数",
+    scribeLow: "低置信度",
+    scribeMust: "待确认",
+    scribeOpen: "打开",
+    scribeDetail: "会话详情",
+    scribeCommit: "确认入库",
+    scribeNone: "还没有录入会话。现场用：scribe voice --project <项目> --audio 录音.m4a（或 scribe photo --image 手稿.jpg）。",
+    scribeHelp: "提示：原音/原图只在会话目录里（复制进来的原件，飞行模式也不丢）；确认入库前请把红色格子逐个人工核对。",
     // 待办（tasks.csv，§5.2.11）
     todosTitle: "今天 / 本周 / 逾期",
     todosNote: "数据来自 tables/tasks.csv；勾选完成会同时改当前行（前值进历史对象库）并写一条更正记录，随时可还原。",
@@ -584,7 +611,7 @@ const I18N = {
   en: {
     slogan: "May Cerces safeguard your thoughts.",
     open: "Open project", placeholder: "Project folder path",
-    tabs: { data: "Data", plugins: "Plugins", market: "Market", access: "Encrypted zones", transfer: "Transfer", log: "Change log", tools: "Tools", todos: "To-dos" },
+    tabs: { data: "Data", scribe: "Scribe", plugins: "Plugins", market: "Market", access: "Encrypted zones", transfer: "Transfer", log: "Change log", tools: "Tools", todos: "To-dos" },
     rows: "rows", refresh: "Refresh", filterPh: "Filter: col:op:value (e.g. value_num:gt:20)",
     trust: "Trust & enable", revoke: "Revoke", trusted: "trusted", untrusted: "untrusted",
     validate: "Validate project", agents: "Refresh AI files (AGENTS.md)", manifest: "Generate manifest",
@@ -704,6 +731,21 @@ const I18N = {
     sortHintNone: "sort: none (click a header)",
     sortBy: "sort by this column",
     hasMore: "showing the first rows",
+    // Scribe (S9 follow-up)
+    scribeTitle: "Field scribe (voice / handwriting)",
+    scribeNote: "Sessions live under _labnote/scribe/: nothing touches the main tables before you confirm. Replay the original audio, zoom into the photo, check per-cell confidence (yellow = low, red = very low; hover for the reason), then commit through the plugin → kernel append-many.",
+    scribeReload: "Reload sessions",
+    scribeSession: "Session",
+    scribeCreated: "Created",
+    scribeState: "State",
+    scribeRows: "Rows",
+    scribeLow: "low-confidence",
+    scribeMust: "to confirm",
+    scribeOpen: "Open",
+    scribeDetail: "Session",
+    scribeCommit: "Confirm & import",
+    scribeNone: "No sessions yet. In the field: scribe voice --project <dir> --audio rec.m4a (or scribe photo --image sheet.jpg).",
+    scribeHelp: "Note: the original audio/photos live inside the session folder (copied in, so offline work is safe). Check every red cell by hand before importing.",
     // To-dos (tasks.csv)
     todosTitle: "Overdue / today / this week",
     todosNote: "Data lives in tables/tasks.csv. Ticking a task updates the row (the previous value goes to the history store) and writes a correction record, so it can always be undone.",
@@ -1004,7 +1046,8 @@ async function createProject() {
 let currentTab = "data";
 function renderTabs() {
   const tabs = [
-    ["data", t().tabs.data], ["plugins", t().tabs.plugins], ["market", t().tabs.market],
+    ["data", t().tabs.data], ["scribe", t().tabs.scribe],
+    ["plugins", t().tabs.plugins], ["market", t().tabs.market],
     ["access", t().tabs.access], ["transfer", t().tabs.transfer],
     ["log", t().tabs.log], ["tools", t().tabs.tools], ["todos", t().tabs.todos]
   ];
@@ -1025,6 +1068,7 @@ function loadActiveTab() {
   show("marketCard", currentTab === "market");
   show("accessCard", currentTab === "access");
   show("transferCard", currentTab === "transfer");
+  show("scribeCard", currentTab === "scribe");
   show("logCard", currentTab === "log");
   show("toolsCard", currentTab === "tools");
   show("todosCard", currentTab === "todos");
@@ -1033,12 +1077,155 @@ function loadActiveTab() {
   if (currentTab === "market") loadMarket();
   if (currentTab === "access") loadAccess();
   if (currentTab === "transfer") loadTransfer();
+  if (currentTab === "scribe") loadScribe();
   if (currentTab === "log") loadHistory();
   if (currentTab === "todos") loadTodos();
 }
 
 // ———— 搬运（S13）：打包带走 / 合并回来 / 看报告 ————
 // ———— 待办（tasks.csv）：今天 / 本周 / 逾期 ————
+// ———— 录入员（S9 后续）：会话列表 → 原音/原图 + 逐格置信度 + 确认入库 ————
+async function loadScribe() {
+  if (!project) return;
+  $("scribeTitle").textContent = t().scribeTitle;
+  $("scribeNote").textContent = t().scribeNote;
+  $("scribeReloadBtn").textContent = t().scribeReload;
+  $("scribeHelp").textContent = t().scribeHelp;
+  const res = await apiGet("/api/scribe/sessions", { path: project.path });
+  const box = $("scribeSessions");
+  box.innerHTML = "";
+  if (!res.ok) { box.textContent = res.error || ""; return; }
+  const list = res.sessions || [];
+  if (!list.length) {
+    box.innerHTML = `<div class="muted">${t().scribeNone}</div>`;
+    $("scribeDetail").innerHTML = "";
+    return;
+  }
+  const table = document.createElement("table");
+  table.innerHTML = `<thead><tr><th>${t().scribeSession}</th><th>${t().scribeCreated}</th><th>${t().scribeState}</th><th>${t().scribeRows}</th><th></th></tr></thead><tbody></tbody>`;
+  const tbody = table.querySelector("tbody");
+  for (const s of list) {
+    const tr = document.createElement("tr");
+    const state = `${s.status}${s.low_confidence ? ` · ${t().scribeLow} ${s.low_confidence}` : ""}${s.must_confirm ? ` · ${t().scribeMust} ${s.must_confirm}` : ""}`;
+    tr.innerHTML = `<td>${s.label || s.session}<br><span class="muted">${s.session}</span></td>
+      <td><span class="muted">${s.created_at}</span></td>
+      <td>${state}</td><td>${s.rows}</td><td></td>`;
+    const open = document.createElement("button");
+    open.textContent = t().scribeOpen;
+    open.onclick = () => openScribeSession(s.session);
+    tr.lastElementChild.appendChild(open);
+    tbody.appendChild(tr);
+  }
+  box.appendChild(table);
+  if (list.length) openScribeSession(list[0].session);
+}
+
+async function openScribeSession(id) {
+  const res = await apiGet("/api/scribe/session", { path: project.path, id });
+  const box = $("scribeDetail");
+  if (!res.ok) { box.textContent = res.error || ""; return; }
+  box.innerHTML = "";
+
+  const h = document.createElement("h3");
+  h.style.cssText = "font-size:15px;";
+  h.textContent = `${t().scribeDetail}：${res.session}（${res.table}）`;
+  box.appendChild(h);
+
+  // 原音：能直接放
+  for (const f of (res.audio || [])) {
+    const row = document.createElement("div");
+    row.className = "row";
+    const label = document.createElement("span");
+    label.className = "muted";
+    label.textContent = f.split("/").pop();
+    const audio = document.createElement("audio");
+    audio.controls = true;
+    audio.preload = "none";
+    audio.src = `/api/media?path=${encodeURIComponent(project.path)}&file=${encodeURIComponent(f)}`;
+    row.appendChild(label);
+    row.appendChild(audio);
+    box.appendChild(row);
+  }
+  // 原图：点一下放大
+  for (const f of (res.images || [])) {
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "margin:6px 0;";
+    const img = document.createElement("img");
+    img.src = `/api/media?path=${encodeURIComponent(project.path)}&file=${encodeURIComponent(f)}`;
+    img.alt = f.split("/").pop();
+    img.style.cssText = "max-height:160px; border:1px solid #ddd; cursor:zoom-in;";
+    img.onclick = () => {
+      img.style.maxHeight = img.style.maxHeight === "none" ? "160px" : "none";
+      img.style.cursor = img.style.maxHeight === "none" ? "zoom-out" : "zoom-in";
+    };
+    wrap.appendChild(img);
+    box.appendChild(wrap);
+  }
+
+  // 草稿表：低置信度的格子标黄/标红（鼠标悬停看原因）
+  const conf = {};
+  for (const c of (res.low_cells || [])) {
+    conf[`${c.index}|${c.field}`] = c;
+  }
+  const table = document.createElement("table");
+  table.style.marginTop = "10px";
+  table.innerHTML = `<thead><tr><th>#</th>${(res.columns || []).map(c => `<th>${c}</th>`).join("")}</tr></thead><tbody></tbody>`;
+  const tbody = table.querySelector("tbody");
+  (res.rows || []).forEach((row, i) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td class="muted">${i + 1}</td>`;
+    for (const c of (res.columns || [])) {
+      const td = document.createElement("td");
+      const cell = conf[`${i + 1}|${c}`];
+      td.textContent = row[c] ?? "";
+      if (cell) {
+        const score = Number(cell.score ?? 1);
+        td.style.background = score < 0.5 ? "#ffe0e0" : "#fff6d8";
+        td.title = `${score}（${cell.source || ""}）：${cell.reason || ""}`;
+      }
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  });
+  box.appendChild(table);
+
+  // 待确认清单（原文）
+  if (res.checklist) {
+    const pre = document.createElement("pre");
+    pre.className = "muted";
+    pre.style.cssText = "white-space:pre-wrap; max-height:220px; overflow:auto; margin-top:8px;";
+    pre.textContent = res.checklist;
+    box.appendChild(pre);
+  }
+
+  // 确认入库（走插件 → 内核 append-many）
+  const row = document.createElement("div");
+  row.className = "row";
+  row.style.marginTop = "10px";
+  const btn = document.createElement("button");
+  btn.className = "primary";
+  btn.textContent = t().scribeCommit;
+  btn.onclick = async () => {
+    if (!confirm(`${t().scribeCommit} ${res.session}?`)) return;
+    btn.disabled = true;
+    const r = await apiPost("/api/scribe/commit", { path: project.path, session: res.session });
+    btn.disabled = false;
+    $("scribeStatus").textContent = r.ok ? "✓" : (r.error || "失败");
+    const out = document.createElement("pre");
+    out.className = "muted";
+    out.style.whiteSpace = "pre-wrap";
+    out.textContent = (r.stdout || "") + (r.stderr || "") + (r.error || "");
+    box.appendChild(out);
+    if (r.ok) { await loadTables(); await loadScribe(); }
+  };
+  row.appendChild(btn);
+  const cli = document.createElement("span");
+  cli.className = "muted";
+  cli.textContent = `或命令行：scribe commit --session ${res.session} --confirm`;
+  row.appendChild(cli);
+  box.appendChild(row);
+}
+
 async function loadTodos() {
   if (!project) return;
   $("todosTitle").textContent = t().todosTitle;
@@ -2172,6 +2359,7 @@ $("todoAddBtn").onclick = addTodo;
 $("logFilterBtn").onclick = loadHistory;
 $("recordHistoryBtn").onclick = loadRecordHistory;
 $("nasAddBtn").onclick = addNas;
+$("scribeReloadBtn").onclick = loadScribe;
 $("wcCreateBtn").onclick = createWorkcopy;
 $("wcSyncDryBtn").onclick = () => syncWorkcopy(true);
 $("wcSyncBtn").onclick = () => syncWorkcopy(false);

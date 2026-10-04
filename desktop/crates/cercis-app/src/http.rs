@@ -23,7 +23,8 @@ pub struct Request {
 pub struct Response {
     pub status: u16,
     pub content_type: String,
-    pub body: String,
+    /// 正文用字节：界面本身是文本，但"录入员"页要放原音/原图（二进制）
+    pub body: Vec<u8>,
 }
 
 impl Response {
@@ -31,7 +32,7 @@ impl Response {
         Self {
             status: 200,
             content_type: "application/json; charset=utf-8".into(),
-            body: body.to_string(),
+            body: body.as_bytes().to_vec(),
         }
     }
 
@@ -39,7 +40,7 @@ impl Response {
         Self {
             status: 200,
             content_type: "text/html; charset=utf-8".into(),
-            body: body.to_string(),
+            body: body.as_bytes().to_vec(),
         }
     }
 
@@ -52,7 +53,7 @@ impl Response {
         Self {
             status,
             content_type: "application/json; charset=utf-8".into(),
-            body,
+            body: body.into_bytes(),
         }
     }
 }
@@ -159,6 +160,45 @@ fn parse_query(q: &str) -> BTreeMap<String, String> {
     out
 }
 
+/// 读项目里的媒体文件（给界面的原音/原图用）。
+///
+/// 安全：只允许项目内的 `_labnote/scribe/` 与 `media/` 两个位置，且路径里不许有 `..`，
+/// 免得这个本地端口变成"读任意文件"的通道。
+pub fn read_project_media(root: &std::path::Path, file: &str) -> Result<(Vec<u8>, String), String> {
+    let rel = file.trim_start_matches('/');
+    if rel.contains("..") || rel.starts_with('/') {
+        return Err("路径不合法".into());
+    }
+    let ok_prefix = rel.starts_with("_labnote/scribe/") || rel.starts_with("media/");
+    if !ok_prefix {
+        return Err("只允许读项目里的 _labnote/scribe 与 media".into());
+    }
+    let path = root.join(rel);
+    let bytes = std::fs::read(&path).map_err(|e| format!("读不了 {}：{e}", path.display()))?;
+    let ctype = match path
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default()
+        .as_str()
+    {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "heic" => "image/heic",
+        "tif" | "tiff" => "image/tiff",
+        "svg" => "image/svg+xml",
+        "mp3" => "audio/mpeg",
+        "m4a" | "aac" => "audio/mp4",
+        "wav" => "audio/wav",
+        "ogg" => "audio/ogg",
+        "mp4" => "video/mp4",
+        "mov" => "video/quicktime",
+        _ => "application/octet-stream",
+    };
+    Ok((bytes, ctype.to_string()))
+}
+
 /// 极简 URL 解码（处理 %XX 与 +）。
 pub fn url_decode(s: &str) -> String {
     let bytes = s.as_bytes();
@@ -198,7 +238,7 @@ fn write_response(stream: &mut TcpStream, resp: &Response) -> std::io::Result<()
         resp.body.len()
     );
     stream.write_all(head.as_bytes())?;
-    stream.write_all(resp.body.as_bytes())?;
+    stream.write_all(&resp.body)?;
     stream.flush()
 }
 
