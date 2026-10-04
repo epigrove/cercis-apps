@@ -150,12 +150,24 @@ pub fn run(
     project_root: &Path,
     plugin: &DiscoveredPlugin,
     trusted: bool,
+    network_allowed: bool,
     command: &str,
     extra: &[String],
 ) -> Result<RunOutcome, String> {
     if !is_runnable(plugin, trusted) {
         return Err(format!(
             "插件 {} 来自项目内且尚未被信任，按安全规则不会运行",
+            plugin.manifest.id
+        ));
+    }
+    // 权限降级（Cordis §6.3）：清单声明了要联网，就必须先被明确批准联网
+    if !plugin.manifest.permissions.network.is_off() && !network_allowed {
+        return Err(format!(
+            "插件 {} 声明要联网（{}），但还没被批准。\n\
+             - 命令行批准：cercis trust <项目> --id {} --allow-network\n\
+             - 或在「插件」页点「允许联网」后再运行",
+            plugin.manifest.id,
+            plugin.manifest.permissions.network.summary(),
             plugin.manifest.id
         ));
     }
@@ -200,7 +212,28 @@ pub fn run(
     }
 
     let command_line = format!("{} {}", entry.display(), args.join(" "));
-    let output = Command::new(&entry).args(&args).output().map_err(|e| {
+    // 把"我是谁、能碰什么"告诉内核：内核在读写通道上执法（表范围 / 只读 / 网络域名）
+    let tables = if !plugin.manifest.permissions.tables.is_empty() {
+        plugin.manifest.permissions.tables.join(",")
+    } else {
+        plugin.manifest.requires.tables.join(",")
+    };
+    let network = match &plugin.manifest.permissions.network {
+        cercis_core::plugin::NetworkPermission::Off => "off".to_string(),
+        cercis_core::plugin::NetworkPermission::Any => "any".to_string(),
+        cercis_core::plugin::NetworkPermission::Domains(list) => list.join(","),
+    };
+    let output = Command::new(&entry)
+        .args(&args)
+        .env("CERCIS_PLUGIN_ID", &plugin.manifest.id)
+        .env("CERCIS_PLUGIN_TABLES", tables)
+        .env(
+            "CERCIS_PLUGIN_WRITE",
+            if plugin.manifest.permissions.write { "1" } else { "0" },
+        )
+        .env("CERCIS_PLUGIN_NETWORK", network)
+        .output()
+        .map_err(|e| {
         format!(
             "插件 {} 启动失败：{e}（入口 {}）",
             plugin.manifest.id,
@@ -255,7 +288,8 @@ mod tests {
                 permissions: Permissions {
                     read: true,
                     write: false,
-                    network: false,
+                    network: Default::default(),
+                    tables: Vec::new(),
                 },
                 surfaces: Surfaces::default(),
                 ui: vec![],
@@ -279,7 +313,7 @@ mod tests {
 
     #[test]
     fn untrusted_project_plugin_is_refused() {
-        let err = run(Path::new("/tmp/proj"), &plugin("project"), false, "", &[]).unwrap_err();
+        let err = run(Path::new("/tmp/proj"), &plugin("project"), false, false, "", &[]).unwrap_err();
         assert!(err.contains("未被信任"), "{err}");
     }
 

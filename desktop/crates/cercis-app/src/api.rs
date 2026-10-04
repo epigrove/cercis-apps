@@ -849,6 +849,9 @@ pub fn handle(req: &Request) -> Response {
             let trusted = cercis_core::TrustRecord::load(root)
                 .unwrap_or_default()
                 .is_trusted(&plugin.manifest.id, &plugin.fingerprint);
+            let network_allowed = cercis_core::TrustRecord::load(root)
+                .unwrap_or_default()
+                .is_network_allowed(&plugin.manifest.id);
             let args = vec![
                 "--session".to_string(),
                 session.to_string(),
@@ -857,7 +860,7 @@ pub fn handle(req: &Request) -> Response {
                 note.to_string(),
                 "--json".to_string(),
             ];
-            match crate::plugin_host::run(root, plugin, trusted, "commit", &args) {
+            match crate::plugin_host::run(root, plugin, trusted, network_allowed, "commit", &args) {
                 Ok(out) => Response::json(
                     &json!({
                         "ok": out.code == 0,
@@ -1533,6 +1536,10 @@ pub fn handle(req: &Request) -> Response {
                                 "inactive_reasons": p.manifest.activation(path).reasons,
                                 "permissions": p.manifest.permission_summary(),
                                 "can_write": p.manifest.permissions.write,
+                                // 权限范围（界面显示 + 联网批准按钮用）
+                                "network": p.manifest.permissions.network,
+                                "network_allowed": trust.is_network_allowed(&p.manifest.id),
+                                "tables": p.manifest.permissions.tables,
                                 "entrypoint": p.manifest.entrypoint,
                                 "description": p.manifest.description,
                                 "ui_extensions": p.manifest.ui.iter().map(|u| json!({
@@ -1599,9 +1606,16 @@ pub fn handle(req: &Request) -> Response {
             };
             let trust = cercis_core::TrustRecord::load(path).unwrap_or_default();
             let trusted = trust.is_trusted(&plugin.manifest.id, &plugin.fingerprint);
+            let network_allowed = trust.is_network_allowed(&plugin.manifest.id);
 
-            match crate::plugin_host::run(std::path::Path::new(path), plugin, trusted, &command, &args)
-            {
+            match crate::plugin_host::run(
+                std::path::Path::new(path),
+                plugin,
+                trusted,
+                network_allowed,
+                &command,
+                &args,
+            ) {
                 Ok(outcome) => Response::json(
                     &json!({
                         "ok": outcome.succeeded(),
@@ -1636,6 +1650,8 @@ pub fn handle(req: &Request) -> Response {
                 .get("revoke")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
+            // 权限降级：联网要单独点头（清单里声明了网络才用得上）
+            let allow_network = body.get("allow_network").and_then(|v| v.as_bool());
             if path.is_empty() || id.is_empty() {
                 return Response::error(400, lang.t("缺少 path 或 id", "missing path or id"));
             }
@@ -1646,15 +1662,25 @@ pub fn handle(req: &Request) -> Response {
                     let mut tr = cercis_core::TrustRecord::load(path).unwrap_or_default();
                     if revoke {
                         tr.untrust(id);
+                        tr.set_network_allowed(id, false);
                     } else if let Some(t) = target {
                         tr.trust(id, &t.fingerprint);
+                        if let Some(allow) = allow_network {
+                            tr.set_network_allowed(id, allow);
+                        }
                     } else {
                         return Response::error(404, lang.t("未找到插件", "plugin not found"));
                     }
                     if let Err(e) = tr.save(path) {
                         return Response::error(500, &e.to_string());
                     }
-                    Response::json(&json!({ "ok": true, "id": id, "revoked": revoke }).to_string())
+                    Response::json(
+                        &json!({
+                            "ok": true, "id": id, "revoked": revoke,
+                            "network_allowed": tr.is_network_allowed(id),
+                        })
+                        .to_string(),
+                    )
                 }
                 Err(e) => Response::error(500, &e.to_string()),
             }

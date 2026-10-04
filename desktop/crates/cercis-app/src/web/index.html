@@ -463,6 +463,12 @@ const I18N = {
     pluginBlock: "屏蔽", pluginUnblock: "取消屏蔽",
     pluginDisabled: "已停用", pluginBlocked: "已屏蔽（界面不出现）",
     pluginInactive: "已装未生效",
+    pluginNetAllow: "允许联网",
+    pluginNetDeny: "取消联网",
+    pluginNetPending: "声明要联网，等待批准",
+    pluginNetOk: "联网已批准",
+    pluginTablesOnly: "只允许碰这些表",
+    netAnyHost: "未限定域名",
     desiredTitle: "期望状态（plugins/desired.yaml）",
     desiredNone: "还没有这份文件：写下「想要装哪些插件、停用/屏蔽哪些」，换设备时一键对齐。",
     desiredCheck: "对账", desiredApply: "对齐", desiredAligned: "已对齐",
@@ -651,6 +657,12 @@ const I18N = {
     pluginBlock: "Block", pluginUnblock: "Unblock",
     pluginDisabled: "disabled", pluginBlocked: "blocked (hidden)",
     pluginInactive: "installed, not active",
+    pluginNetAllow: "Allow network",
+    pluginNetDeny: "Revoke network",
+    pluginNetPending: "declares network, waiting for approval",
+    pluginNetOk: "network approved",
+    pluginTablesOnly: "tables it may touch",
+    netAnyHost: "any host",
     desiredTitle: "Desired state (plugins/desired.yaml)",
     desiredNone: "No desired-state file yet: write down what you want installed/disabled/blocked, then align on any device.",
     desiredCheck: "Check", desiredApply: "Align", desiredAligned: "aligned",
@@ -2016,6 +2028,17 @@ async function loadPlugins() {
     else if (!p.active && (p.inactive_reasons||[]).length) {
       status += ` <span class="tag warn">${t().pluginInactive}：${(p.inactive_reasons||[]).join("；")}</span>`;
     }
+    // 权限降级：声明了网络却还没批准 → 明确标出来（按钮点了才放行）
+    const netDeclared = p.network && !(p.network === false);
+    if (netDeclared && !p.network_allowed) {
+      const netLabel = Array.isArray(p.network) ? p.network.join("、") : t().netAnyHost;
+      status += `<br><span class="tag warn">${t().pluginNetPending}：${netLabel}</span>`;
+    } else if (netDeclared) {
+      status += `<br><span class="tag ok">${t().pluginNetOk}</span>`;
+    }
+    if ((p.tables || []).length) {
+      status += `<br><span class="muted">${t().pluginTablesOnly}：${p.tables.join("、")}</span>`;
+    }
     tr.innerHTML = `<td>${p.name}<br><span class="muted">${p.id}</span></td>
       <td>${p.origin}</td><td>${p.permissions}</td><td>${ext||"<span class=muted>—</span>"}</td>
       <td>${status}${p.runnable ? "" : '<br><span class="muted">'+t().notRunnable+"</span>"}</td>
@@ -2030,6 +2053,22 @@ async function loadPlugins() {
       renderPluginActions();
     };
     cell.appendChild(btn);
+
+    // 联网批准 / 撤销（只对声明了网络的插件显示）
+    if (netDeclared) {
+      const net = document.createElement("button");
+      net.style.marginLeft = "6px";
+      net.textContent = p.network_allowed ? t().pluginNetDeny : t().pluginNetAllow;
+      net.onclick = async () => {
+        const r = await apiPost("/api/trust", {
+          path: project.path, id: p.id, allow_network: !p.network_allowed,
+        });
+        if (!r.ok) alert(r.error);
+        await loadPlugins();
+        renderPluginActions();
+      };
+      cell.appendChild(net);
+    }
 
     // 停用 / 启用（不加载，但仍列出来）
     const dis = document.createElement("button");
