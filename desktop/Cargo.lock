@@ -93,6 +93,7 @@ name = "cercis-app"
 version = "0.1.0"
 dependencies = [
  "cercis-core",
+ "chrono",
  "serde",
  "serde_json",
 ]

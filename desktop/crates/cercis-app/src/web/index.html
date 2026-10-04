@@ -81,8 +81,21 @@
   <div class="tabs" id="tabs" style="margin-bottom:14px;"></div>
 
   <div class="card" id="todosCard" style="display:none;">
-    <h2>今天 / 本周 / 逾期</h2>
-    <ul class="todos" id="todos"><li class="muted">（待办数据来自 tables/tasks.csv；尚未有任何事项）</li></ul>
+    <h2 id="todosTitle"></h2>
+    <p class="muted" id="todosNote"></p>
+    <div class="row" style="margin-top:8px;">
+      <input id="todoTitle" style="width:300px;" />
+      <input id="todoDue" type="date" style="width:150px;" />
+      <select id="todoPriority" style="width:110px;">
+        <option value="高">高</option>
+        <option value="中" selected>中</option>
+        <option value="低">低</option>
+      </select>
+      <input id="todoEvent" style="width:170px;" />
+      <button id="todoAddBtn" class="primary"></button>
+      <span class="status" id="todoStatus"></span>
+    </div>
+    <div id="todoBuckets" style="margin-top:10px;"></div>
   </div>
 
   <div class="card" id="dataCard" style="display:none;">
@@ -276,13 +289,68 @@
       <span class="status" id="syncStatus"></span>
     </div>
     <pre class="muted" id="syncResult" style="white-space:pre-wrap;"></pre>
+
+    <h3 style="margin-top:16px; font-size:15px;" id="nasTitle"></h3>
+    <div class="muted" id="nasNote"></div>
+    <div class="row" style="margin-top:6px;">
+      <input id="nasWho" style="width:200px;" />
+    </div>
+    <div class="row" style="margin-top:6px;">
+      <input id="nasName" placeholder="nas" style="width:110px;" />
+      <input id="nasPath" style="width:300px;" />
+      <select id="nasKind" style="width:110px;">
+        <option value="">自动</option>
+        <option value="smb">SMB</option>
+        <option value="webdav">WebDAV</option>
+        <option value="sftp">SFTP</option>
+        <option value="local">本地/已挂载</option>
+      </select>
+      <button id="nasAddBtn"></button>
+      <span class="status" id="nasStatus"></span>
+    </div>
+    <div class="scroll" style="margin-top:8px;">
+      <table id="nasTable"><thead>
+        <tr><th id="nasThName"></th><th id="nasThPath"></th><th id="nasThState"></th><th></th></tr>
+      </thead><tbody></tbody></table>
+    </div>
+    <div class="muted" id="nasLeases" style="margin-top:6px;"></div>
+    <pre class="muted" id="nasTestOut" style="white-space:pre-wrap;"></pre>
+
+    <h3 style="margin-top:16px; font-size:15px;" id="wcTitle"></h3>
+    <div class="muted" id="wcNote"></div>
+    <div class="row" style="margin-top:6px;">
+      <input id="wcMain" style="width:300px;" />
+      <input id="wcTo" style="width:300px;" />
+      <button id="wcCreateBtn"></button>
+      <span class="status" id="wcStatus"></span>
+    </div>
+    <div class="row">
+      <button id="wcSyncDryBtn"></button>
+      <button id="wcSyncBtn" class="primary"></button>
+    </div>
+    <pre class="muted" id="wcOut" style="white-space:pre-wrap;"></pre>
   </div>
 
   <div class="card" id="logCard" style="display:none;">
-    <h2>变更流水</h2>
+    <h2 id="logTitle"></h2>
+    <div class="row" style="margin-top:6px;">
+      <input id="logTableFilter" style="width:170px;" />
+      <input id="logUserFilter" style="width:150px;" />
+      <input id="logDeviceFilter" style="width:150px;" />
+      <button id="logFilterBtn"></button>
+      <span class="status" id="logStatus"></span>
+    </div>
     <div class="scroll"><table id="logTable"><thead>
       <tr><th>时间</th><th>动作</th><th>对象</th><th>说明</th><th>用户</th><th>设备</th></tr>
     </thead><tbody></tbody></table></div>
+    <h3 style="margin-top:16px; font-size:15px;" id="recordHistoryTitle"></h3>
+    <div class="row">
+      <input id="recordTable" style="width:150px;" />
+      <input id="recordId" style="width:170px;" />
+      <button id="recordHistoryBtn"></button>
+      <span class="status" id="recordHistoryStatus"></span>
+    </div>
+    <pre class="muted" id="recordHistoryOut" style="white-space:pre-wrap; max-height:320px; overflow:auto;"></pre>
   </div>
 
   <div class="card" id="toolsCard" style="display:none;">
@@ -446,6 +514,55 @@ const I18N = {
     accountRequired: "这个项目启用了账户：写入需要先登录（查看者只读、编辑者能写数据、管理员能改结构）。去「加密区域」页登录。",
     accountGrant: "改角色",
     accountRemove: "删除",
+    // 待办（tasks.csv，§5.2.11）
+    todosTitle: "今天 / 本周 / 逾期",
+    todosNote: "数据来自 tables/tasks.csv；勾选完成会同时改当前行（前值进历史对象库）并写一条更正记录，随时可还原。",
+    todoTitlePh: "要做什么，如「12 月土样四项测定收尾」",
+    todoEventPh: "关联事件（可空）",
+    todoAdd: "加一条",
+    todoOverdue: "逾期",
+    todoToday: "今天",
+    todoThisWeek: "本周",
+    todoLater: "以后",
+    todoDone: "已完成",
+    todoNone: "（没有待办）",
+    todoNoTable: "还没有 tasks.csv；在上面加一条就会按标准列建好（task_id/title/due_date/status/priority/related_event_id/notes/created_at/done_at）。",
+    todoDone2: "已完成",
+    todoUndo: "取消完成",
+    // 历史审阅（FR-M02/M05/M07）
+    logTitle: "变更流水",
+    logTablePh: "只看哪张表（可空）",
+    logUserPh: "只看谁（可空）",
+    logDevicePh: "只看哪台设备（可空）",
+    logFilter: "筛选",
+    recordHistoryTitle: "单条记录的完整版本链",
+    recordTablePh: "表名，如 records",
+    recordIdPh: "记录编号，如 R-1",
+    recordHistory: "看版本链",
+    // NAS（FR-N01–N07）
+    nasTitle: "网络位置（NAS）",
+    nasNote: "内核只认挂载好的路径：先用系统挂载（Finder「连接到服务器」/Windows 映射网络驱动器），再把挂载点登记到这里。口令只进系统钥匙串，不写进项目。",
+    nasNamePh: "简称，如 nas",
+    nasPathPh: "挂载后的路径，如 /Volumes/lab-nas",
+    nasAdd: "登记",
+    nasTest: "体检",
+    nasClaim: "取写租约",
+    nasRelease: "释放",
+    nasCredential: "存凭据",
+    nasRemove: "移除",
+    nasReachable: "可达",
+    nasUnreachable: "不可达",
+    nasNoRemotes: "还没有登记网络位置。",
+    nasLeases: "当前写租约：",
+    nasLeasesNone: "当前没有写租约。",
+    wcTitle: "工作副本（推荐：断网也能记，联网双向合并）",
+    wcNote: "在 NAS 主副本之外留一份本地副本；两边各自记，回来一键双向合并（并集，冲突留双方副本）。",
+    wcMainPh: "主副本路径（NAS 上）",
+    wcToPh: "本地副本目录（必须为空）",
+    wcCreate: "建工作副本",
+    wcSyncDry: "试运行同步",
+    wcSync: "双向同步",
+    wcNotWorkcopy: "当前打开的项目不是工作副本（没有 _labnote/workcopy.yaml）。",
   },
   en: {
     slogan: "May Cerces safeguard your thoughts.",
@@ -565,6 +682,55 @@ const I18N = {
     accountRequired: "This project uses accounts: writing requires signing in (viewer = read-only, editor = data writes, admin = structure & plugins). Sign in on the Encrypted zones page.",
     accountGrant: "Set role",
     accountRemove: "Delete",
+    // To-dos (tasks.csv)
+    todosTitle: "Overdue / today / this week",
+    todosNote: "Data lives in tables/tasks.csv. Ticking a task updates the row (the previous value goes to the history store) and writes a correction record, so it can always be undone.",
+    todoTitlePh: "what needs doing, e.g. 'wrap up the December soil sampling'",
+    todoEventPh: "related event (optional)",
+    todoAdd: "Add",
+    todoOverdue: "Overdue",
+    todoToday: "Today",
+    todoThisWeek: "This week",
+    todoLater: "Later",
+    todoDone: "Done",
+    todoNone: "(nothing here)",
+    todoNoTable: "No tasks.csv yet — adding one above creates it with the standard columns.",
+    todoDone2: "Done",
+    todoUndo: "Undo",
+    // History review (FR-M02/M05/M07)
+    logTitle: "Change log",
+    logTablePh: "only this table (optional)",
+    logUserPh: "only this user (optional)",
+    logDevicePh: "only this device (optional)",
+    logFilter: "Filter",
+    recordHistoryTitle: "Full version chain of one record",
+    recordTablePh: "table name, e.g. records",
+    recordIdPh: "record id, e.g. R-1",
+    recordHistory: "Show chain",
+    // NAS (FR-N01–N07)
+    nasTitle: "Network locations (NAS)",
+    nasNote: "The kernel only knows a mounted path: mount it first with the OS, then register the mount point here. Passwords go to the system keychain, never into the project.",
+    nasNamePh: "short name, e.g. nas",
+    nasPathPh: "mounted path, e.g. /Volumes/lab-nas",
+    nasAdd: "Register",
+    nasTest: "Check",
+    nasClaim: "Take write lease",
+    nasRelease: "Release",
+    nasCredential: "Store credential",
+    nasRemove: "Remove",
+    nasReachable: "reachable",
+    nasUnreachable: "unreachable",
+    nasNoRemotes: "No network location registered yet.",
+    nasLeases: "Active write leases: ",
+    nasLeasesNone: "No active write lease.",
+    wcTitle: "Working copy (recommended: record offline, merge both ways when back online)",
+    wcNote: "Keep a local copy next to the NAS master; record on both sides, then merge both ways in one click (union; conflicts keep both copies).",
+    wcMainPh: "master path (on the NAS)",
+    wcToPh: "local copy folder (must be empty)",
+    wcCreate: "Create working copy",
+    wcSyncDry: "Dry-run sync",
+    wcSync: "Sync both ways",
+    wcNotWorkcopy: "The project you opened is not a working copy (no _labnote/workcopy.yaml).",
   }
 };
 let lang = "zh";
@@ -840,10 +1006,243 @@ function loadActiveTab() {
   if (currentTab === "market") loadMarket();
   if (currentTab === "access") loadAccess();
   if (currentTab === "transfer") loadTransfer();
-  if (currentTab === "log") loadLog();
+  if (currentTab === "log") loadHistory();
+  if (currentTab === "todos") loadTodos();
 }
 
 // ———— 搬运（S13）：打包带走 / 合并回来 / 看报告 ————
+// ———— 待办（tasks.csv）：今天 / 本周 / 逾期 ————
+async function loadTodos() {
+  if (!project) return;
+  $("todosTitle").textContent = t().todosTitle;
+  $("todosNote").textContent = t().todosNote;
+  $("todoTitle").placeholder = t().todoTitlePh;
+  $("todoEvent").placeholder = t().todoEventPh;
+  $("todoAddBtn").textContent = t().todoAdd;
+
+  const res = await apiGet("/api/todos", { path: project.path });
+  const box = $("todoBuckets");
+  box.innerHTML = "";
+  if (!res.ok) { box.textContent = res.error || ""; return; }
+  if (!res.exists) {
+    box.innerHTML = `<div class="muted">${t().todoNoTable}</div>`;
+    return;
+  }
+  const order = [
+    ["overdue", t().todoOverdue],
+    ["today", t().todoToday],
+    ["this_week", t().todoThisWeek],
+    ["later", t().todoLater],
+    ["done", t().todoDone],
+  ];
+  for (const [key, label] of order) {
+    const items = (res.tasks && res.tasks[key]) || [];
+    const h = document.createElement("h3");
+    h.style.cssText = "margin:12px 0 4px; font-size:15px;";
+    h.textContent = `${label}（${items.length}）`;
+    box.appendChild(h);
+    if (!items.length) {
+      const d = document.createElement("div");
+      d.className = "muted";
+      d.textContent = t().todoNone;
+      box.appendChild(d);
+      continue;
+    }
+    const list = document.createElement("ul");
+    list.className = "todos";
+    for (const item of items) {
+      const li = document.createElement("li");
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = key === "done";
+      cb.onchange = async () => {
+        const r = await apiPost("/api/todos/done", {
+          path: project.path, task_id: item.task_id, done: cb.checked,
+        });
+        $("todoStatus").textContent = r.ok ? "✓" : (r.error || "");
+        if (r.ok) await loadTodos();
+      };
+      li.appendChild(cb);
+      const span = document.createElement("span");
+      const due = item.due_date ? `（到期 ${item.due_date}）` : "";
+      const pri = item.priority ? `[${item.priority}] ` : "";
+      span.textContent = ` ${pri}${item.title || ""} ${due}${item.related_event_id ? " · " + item.related_event_id : ""}`;
+      if (key === "overdue") span.style.color = "#b00";
+      li.appendChild(span);
+      list.appendChild(li);
+    }
+    box.appendChild(list);
+  }
+}
+
+async function addTodo() {
+  if (!project) return;
+  const title = $("todoTitle").value.trim();
+  if (!title) { alert(t().todoTitlePh); return; }
+  $("todoStatus").textContent = "…";
+  const r = await apiPost("/api/todos/add", {
+    path: project.path, title,
+    due_date: $("todoDue").value,
+    priority: $("todoPriority").value,
+    related_event_id: $("todoEvent").value.trim(),
+  });
+  $("todoStatus").textContent = r.ok ? `✓ ${r.task_id}` : (r.error || "");
+  if (r.ok) { $("todoTitle").value = ""; $("todoEvent").value = ""; await loadTodos(); }
+}
+
+// ———— 历史审阅（FR-M02/M07）：流水筛选 + 单条记录版本链 ————
+async function loadHistory() {
+  if (!project) return;
+  $("logTableFilter").placeholder = t().logTablePh;
+  $("logUserFilter").placeholder = t().logUserPh;
+  $("logDeviceFilter").placeholder = t().logDevicePh;
+  $("logFilterBtn").textContent = t().logFilter;
+  const params = { path: project.path, limit: 200 };
+  if ($("logTableFilter").value.trim()) params.table = $("logTableFilter").value.trim();
+  if ($("logUserFilter").value.trim()) params.user = $("logUserFilter").value.trim();
+  if ($("logDeviceFilter").value.trim()) params.device = $("logDeviceFilter").value.trim();
+  const res = await apiGet("/api/history", params);
+  const tbody = $("logTable").querySelector("tbody");
+  if (!res.ok || !(res.entries || []).length) {
+    tbody.innerHTML = `<tr><td class="empty" colspan="6">${t().todoNone}</td></tr>`;
+    $("logStatus").textContent = res.ok ? `0/${res.count ?? 0}` : (res.error || "");
+    return;
+  }
+  $("logStatus").textContent = `${res.count}`;
+  tbody.innerHTML = res.entries.map(e =>
+    `<tr><td>${e.ts}</td><td>${e.action}</td><td>${e.target_table}${e.target_id ? (" / " + e.target_id) : ""}</td>
+     <td>${e.summary || ""}</td><td>${e.user_id || ""}</td><td>${e.device_id || ""}</td></tr>`
+  ).join("");
+}
+
+async function loadRecordHistory() {
+  if (!project) return;
+  const table = $("recordTable").value.trim();
+  const id = $("recordId").value.trim();
+  if (!table || !id) { alert(t().recordHistoryTitle); return; }
+  $("recordHistoryStatus").textContent = "…";
+  const res = await apiGet("/api/history/record", { path: project.path, table, id });
+  if (!res.ok) { $("recordHistoryOut").textContent = res.error || ""; return; }
+  $("recordHistoryStatus").textContent = "✓";
+  const lines = [`${table} / ${id}`];
+  lines.push(`\n— ${t().recordHistoryTitle} —`);
+  for (const e of (res.entries || [])) {
+    lines.push(`${e.ts}  ${e.action}  ${e.summary || ""}  ${e.user || ""}`);
+  }
+  for (const c of (res.corrections || [])) {
+    lines.push(`更正 ${c.ts}: ${c.field} ${c.old} → ${c.new}（${c.reason || ""}；${c.user || ""}）`);
+  }
+  $("recordHistoryOut").textContent = lines.join("\n");
+}
+
+// ———— NAS（FR-N01–N07）：网络位置、体检、写租约、工作副本 ————
+async function loadNas() {
+  if (!project) return;
+  $("nasTitle").textContent = t().nasTitle;
+  $("nasNote").textContent = t().nasNote;
+  $("nasName").placeholder = t().nasNamePh;
+  $("nasPath").placeholder = t().nasPathPh;
+  $("nasAddBtn").textContent = t().nasAdd;
+  $("wcTitle").textContent = t().wcTitle;
+  $("wcNote").textContent = t().wcNote;
+  $("wcMain").placeholder = t().wcMainPh;
+  $("wcTo").placeholder = t().wcToPh;
+  $("wcCreateBtn").textContent = t().wcCreate;
+  $("wcSyncDryBtn").textContent = t().wcSyncDry;
+  $("wcSyncBtn").textContent = t().wcSync;
+
+  const res = await apiGet("/api/remote", { path: project.path });
+  const tbody = $("nasTable").querySelector("tbody");
+  tbody.innerHTML = "";
+  const list = res.remotes || [];
+  if (!list.length) {
+    tbody.innerHTML = `<tr><td class="empty" colspan="4">${t().nasNoRemotes}</td></tr>`;
+  }
+  for (const r of list) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${r.name}</td><td><span class="muted">${r.path}</span></td>
+      <td>${r.reachable ? `<span class="tag ok">${t().nasReachable}</span>` : `<span class="tag warn">${t().nasUnreachable}</span>`}
+          ${r.credential ? " 🔑" : ""}</td><td></td>`;
+    const actions = tr.lastElementChild;
+    const mine = $("nasWho").value.trim() || "me@this-machine";
+    const mk = (label, fn) => { const b = document.createElement("button"); b.textContent = label; b.style.marginLeft = "6px"; b.onclick = fn; actions.appendChild(b); };
+    mk(t().nasTest, async () => {
+      const r2 = await apiGet("/api/remote/test", { path: project.path, name: r.name });
+      $("nasTestOut").textContent = r2.ok ? (r2.summary + "\n" + ((r2.test && r2.test.findings) || []).join("\n")) : (r2.error || "");
+    });
+    mk(t().nasClaim, async () => {
+      const r2 = await apiPost("/api/remote/claim", { path: project.path, who: mine, minutes: 30 });
+      $("nasStatus").textContent = r2.ok ? "✓" : (r2.error || "");
+      if (r2.ok) await loadNas();
+    });
+    mk(t().nasRelease, async () => {
+      const r2 = await apiPost("/api/remote/release", { path: project.path, who: mine });
+      $("nasStatus").textContent = r2.ok ? "✓" : (r2.error || "");
+      if (r2.ok) await loadNas();
+    });
+    mk(t().nasCredential, async () => {
+      const pw = prompt(t().nasCredential + ": " + r.name);
+      if (!pw) return;
+      const r2 = await apiPost("/api/remote/credential", { path: project.path, name: r.name, password: pw });
+      $("nasStatus").textContent = r2.ok ? "✓" : (r2.error || "");
+    });
+    mk(t().nasRemove, async () => {
+      if (!confirm(`${t().nasRemove} ${r.name}?`)) return;
+      const r2 = await apiPost("/api/remote/remove", { path: project.path, name: r.name });
+      $("nasStatus").textContent = r2.ok ? "✓" : (r2.error || "");
+      if (r2.ok) await loadNas();
+    });
+    tbody.appendChild(tr);
+  }
+  $("nasLeases").textContent = (res.leases || []).length
+    ? t().nasLeases + res.leases.join("、")
+    : t().nasLeasesNone;
+
+  // 当前项目是不是工作副本
+  const wc = await apiGet("/api/workcopy", { path: project.path });
+  if (!wc.is_workcopy) {
+    $("wcOut").textContent = t().wcNotWorkcopy;
+  } else {
+    $("wcOut").textContent = wc.summary + "\n" + ((wc.status && wc.status.notes) || []).join("\n");
+  }
+}
+
+async function addNas() {
+  if (!project) return;
+  const name = $("nasName").value.trim();
+  const remote_path = $("nasPath").value.trim();
+  if (!name || !remote_path) { alert(t().nasPathPh); return; }
+  $("nasStatus").textContent = "…";
+  const r = await apiPost("/api/remote/add", {
+    path: project.path, name, remote_path, kind: $("nasKind").value, note: "",
+  });
+  $("nasStatus").textContent = r.ok ? "✓" : (r.error || "");
+  if (r.ok) { $("nasName").value = ""; $("nasPath").value = ""; await loadNas(); }
+}
+
+async function createWorkcopy() {
+  const main = $("wcMain").value.trim();
+  const to = $("wcTo").value.trim();
+  if (!main || !to) { alert(t().wcMainPh); return; }
+  $("wcStatus").textContent = "…";
+  const r = await apiPost("/api/workcopy/create", { main, to, name: "" });
+  $("wcStatus").textContent = r.ok ? "✓" : (r.error || "");
+  if (r.ok) $("wcOut").textContent = `${t().wcCreate}: ${to}\n→ 打开它：${to}`;
+}
+
+async function syncWorkcopy(dryRun) {
+  if (!project) return;
+  $("wcStatus").textContent = "…";
+  const r = await apiPost("/api/workcopy/sync", { copy: project.path, dry_run: dryRun });
+  $("wcStatus").textContent = r.ok ? "✓" : (r.error || "");
+  if (!r.ok) { $("wcOut").textContent = r.error || ""; return; }
+  const lines = [r.summary];
+  if (r.dry_run) lines.push("（试运行：两边都没改）");
+  for (const n of (r.notes || [])) lines.push("注：" + n);
+  $("wcOut").textContent = lines.join("\n");
+  if (r.ok && !dryRun) await loadTables();
+}
+
 function loadTransfer() {
   $("transferTitle").textContent = t().transferTitle;
   $("transferNote").textContent = t().transferNote;
@@ -871,6 +1270,7 @@ function loadTransfer() {
     const stamp = new Date().toISOString().slice(0, 10);
     $("packOut").value = `${project.path}/../cercis-包-${stamp}`;
   }
+  loadNas();
   loadReports();
 }
 
@@ -1698,6 +2098,13 @@ $("mergeDryBtn").onclick = () => doMerge(true);
 $("reportsBtn").onclick = loadReports;
 $("reportViewBtn").onclick = viewReport;
 $("syncBtn").onclick = doSync;
+$("todoAddBtn").onclick = addTodo;
+$("logFilterBtn").onclick = loadHistory;
+$("recordHistoryBtn").onclick = loadRecordHistory;
+$("nasAddBtn").onclick = addNas;
+$("wcCreateBtn").onclick = createWorkcopy;
+$("wcSyncDryBtn").onclick = () => syncWorkcopy(true);
+$("wcSyncBtn").onclick = () => syncWorkcopy(false);
 $("projectPath").addEventListener("keydown", (e) => { if (e.key === "Enter") openProject(); });
 setLang("zh");
 </script>

@@ -7,6 +7,7 @@
 
 use cercis_core::query::{Op, Query, SortDir};
 use cercis_core::Project;
+use chrono::Datelike;
 use serde_json::{json, Value};
 
 use crate::http::{Request, Response};
@@ -572,6 +573,419 @@ pub fn handle(req: &Request) -> Response {
                     &json!({ "ok": true, "file": file, "text": text }).to_string(),
                 ),
                 Err(e) => Response::error(404, &format!("读不了：{e}")),
+            }
+        }
+
+        // ———— 待办（tables/tasks.csv；§5.2.11：内核不解释语义，界面负责"今天/本周/逾期"）————
+        "/api/todos" => {
+            let Some(path) = req.query.get("path") else {
+                return Response::error(400, lang.t("缺少 path 参数", "missing path parameter"));
+            };
+            match read_tasks(path) {
+                Ok((exists, tasks)) => Response::json(
+                    &json!({ "ok": true, "exists": exists, "tasks": tasks }).to_string(),
+                ),
+                Err(e) => Response::error(400, &e.to_string()),
+            }
+        }
+
+        // 建一条待办（没有 tasks.csv 就按标准列建）
+        "/api/todos/add" => {
+            if req.method != "POST" {
+                return Response::error(400, "POST only");
+            }
+            let body: Value = match serde_json::from_str(&req.body) {
+                Ok(v) => v,
+                Err(e) => return Response::error(400, &format!("body 不是 JSON：{e}")),
+            };
+            let path = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let title = body.get("title").and_then(|v| v.as_str()).unwrap_or("");
+            if path.is_empty() || title.trim().is_empty() {
+                return Response::error(
+                    400,
+                    lang.t("需要 path 与 title", "path and title are required"),
+                );
+            }
+            match add_task(path, &body) {
+                Ok(id) => Response::json(&json!({ "ok": true, "task_id": id }).to_string()),
+                Err(e) => Response::error(400, &e.to_string()),
+            }
+        }
+
+        // 勾选完成 / 取消完成：既改当前行（前值进历史对象库），又写一条更正记录
+        "/api/todos/done" => {
+            if req.method != "POST" {
+                return Response::error(400, "POST only");
+            }
+            let body: Value = match serde_json::from_str(&req.body) {
+                Ok(v) => v,
+                Err(e) => return Response::error(400, &format!("body 不是 JSON：{e}")),
+            };
+            let path = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let task_id = body.get("task_id").and_then(|v| v.as_str()).unwrap_or("");
+            let done = body.get("done").and_then(|v| v.as_bool()).unwrap_or(true);
+            if path.is_empty() || task_id.is_empty() {
+                return Response::error(
+                    400,
+                    lang.t("需要 path 与 task_id", "path and task_id are required"),
+                );
+            }
+            match set_task_done(path, task_id, done) {
+                Ok((old, new)) => Response::json(
+                    &json!({ "ok": true, "task_id": task_id, "old": old, "new": new }).to_string(),
+                ),
+                Err(e) => Response::error(400, &e.to_string()),
+            }
+        }
+
+        // ———— 历史审阅（FR-M02/M05/M07）：流水按表/人/设备筛，单条记录看版本链 ————
+        "/api/history" => {
+            let Some(path) = req.query.get("path") else {
+                return Response::error(400, lang.t("缺少 path 参数", "missing path parameter"));
+            };
+            let table = req.query.get("table").cloned().unwrap_or_default();
+            let user = req.query.get("user").cloned().unwrap_or_default();
+            let device = req.query.get("device").cloned().unwrap_or_default();
+            let id = req.query.get("id").cloned().unwrap_or_default();
+            let limit = req
+                .query
+                .get("limit")
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(100);
+            match Project::open(path, None) {
+                Ok(p) => match p.store.read_change_log() {
+                    Ok(entries) => {
+                        let mut list: Vec<_> = entries
+                            .into_iter()
+                            .rev()
+                            .filter(|e| table.is_empty() || e.target_table == table)
+                            .filter(|e| user.is_empty() || e.user_id == user)
+                            .filter(|e| device.is_empty() || e.device_id == device)
+                            .filter(|e| id.is_empty() || e.target_id == id)
+                            .take(limit)
+                            .collect();
+                        // 顺手告诉界面"这台设备上有哪些人"（筛选用）
+                        list.shrink_to_fit();
+                        Response::json(
+                            &json!({ "ok": true, "count": list.len(), "entries": list })
+                                .to_string(),
+                        )
+                    }
+                    Err(e) => Response::error(500, &e.to_string()),
+                },
+                Err(e) => Response::error(404, &e.to_string()),
+            }
+        }
+
+        // 一条记录的完整版本链：更正记录 + 相关流水
+        "/api/history/record" => {
+            let Some(path) = req.query.get("path") else {
+                return Response::error(400, lang.t("缺少 path 参数", "missing path parameter"));
+            };
+            let table = req.query.get("table").cloned().unwrap_or_default();
+            let id = req.query.get("id").cloned().unwrap_or_default();
+            if table.is_empty() || id.is_empty() {
+                return Response::error(
+                    400,
+                    lang.t("需要 table 与 id", "table and id are required"),
+                );
+            }
+            match Project::open(path, None) {
+                Ok(p) => {
+                    // 更正：只挑这一条记录的
+                    let corrections: Vec<Value> = p
+                        .store
+                        .load_table("corrections", &[])
+                        .ok()
+                        .map(|t| {
+                            t.rows
+                                .iter()
+                                .filter(|r| {
+                                    r.get("target_table").map(|s| s.as_str()) == Some(&table)
+                                        && r.get("target_id").map(|s| s.as_str()) == Some(&id)
+                                })
+                                .map(|r| {
+                                    json!({
+                                        "correction_id": r.get("correction_id"),
+                                        "field": r.get("field"),
+                                        "old": r.get("old_value"),
+                                        "new": r.get("new_value"),
+                                        "reason": r.get("reason"),
+                                        "user": r.get("user_id"),
+                                        "ts": r.get("ts"),
+                                    })
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    // 流水：这一条记录上发生过的写入
+                    let entries: Vec<Value> = p
+                        .store
+                        .read_change_log()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|e| e.target_table == table && e.target_id == id)
+                        .map(|e| {
+                            json!({
+                                "change_id": e.change_id,
+                                "ts": e.ts,
+                                "action": e.action,
+                                "summary": e.summary,
+                                "user": e.user_id,
+                                "device": e.device_id,
+                                "hash_before": e.hash_before,
+                                "hash_after": e.hash_after,
+                            })
+                        })
+                        .collect();
+                    Response::json(
+                        &json!({
+                            "ok": true, "table": table, "id": id,
+                            "corrections": corrections, "entries": entries,
+                        })
+                        .to_string(),
+                    )
+                }
+                Err(e) => Response::error(404, &e.to_string()),
+            }
+        }
+
+        // ———— NAS（FR-N01–N07）：网络位置、体检、写租约、工作副本 ————
+        "/api/remote" => {
+            let Some(path) = req.query.get("path") else {
+                return Response::error(400, lang.t("缺少 path 参数", "missing path parameter"));
+            };
+            let root = std::path::Path::new(path);
+            let remotes = cercis_core::remote::list(root).unwrap_or_default();
+            let leases = cercis_core::remote::active_leases(root).unwrap_or_default();
+            Response::json(
+                &json!({
+                    "ok": true,
+                    "remotes": remotes.iter().map(|r| json!({
+                        "name": r.name,
+                        "kind": r.kind,
+                        "path": r.path,
+                        "note": r.note,
+                        "reachable": std::path::Path::new(&r.path).exists(),
+                        "credential": !r.credential_account.is_empty(),
+                    })).collect::<Vec<_>>(),
+                    "leases": leases,
+                })
+                .to_string(),
+            )
+        }
+
+        "/api/remote/add" => {
+            if req.method != "POST" {
+                return Response::error(400, "POST only");
+            }
+            let body: Value = match serde_json::from_str(&req.body) {
+                Ok(v) => v,
+                Err(e) => return Response::error(400, &format!("body 不是 JSON：{e}")),
+            };
+            let path = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let name = body.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let remote_path = body
+                .get("remote_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let kind = body.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+            let note = body.get("note").and_then(|v| v.as_str()).unwrap_or("");
+            match cercis_core::remote::add(
+                std::path::Path::new(path),
+                name,
+                kind,
+                remote_path,
+                note,
+            ) {
+                Ok(r) => Response::json(
+                    &json!({ "ok": true, "name": r.name, "path": r.path, "kind": r.kind })
+                        .to_string(),
+                ),
+                Err(e) => Response::error(400, &e.to_string()),
+            }
+        }
+
+        "/api/remote/remove" => {
+            if req.method != "POST" {
+                return Response::error(400, "POST only");
+            }
+            let body: Value = match serde_json::from_str(&req.body) {
+                Ok(v) => v,
+                Err(e) => return Response::error(400, &format!("body 不是 JSON：{e}")),
+            };
+            let path = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let name = body.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            match cercis_core::remote::remove(std::path::Path::new(path), name) {
+                Ok(r) => Response::json(&json!({ "ok": true, "removed": r.name }).to_string()),
+                Err(e) => Response::error(400, &e.to_string()),
+            }
+        }
+
+        "/api/remote/test" => {
+            let Some(path) = req.query.get("path") else {
+                return Response::error(400, lang.t("缺少 path 参数", "missing path parameter"));
+            };
+            let name = req.query.get("name").map(|s| s.as_str()).unwrap_or("");
+            match cercis_core::remote::test(std::path::Path::new(path), name) {
+                Ok(t) => Response::json(
+                    &json!({
+                        "ok": t.reachable && t.readable,
+                        "summary": t.summary(),
+                        "test": t,
+                    })
+                    .to_string(),
+                ),
+                Err(e) => Response::error(400, &e.to_string()),
+            }
+        }
+
+        "/api/remote/claim" => {
+            if req.method != "POST" {
+                return Response::error(400, "POST only");
+            }
+            let body: Value = match serde_json::from_str(&req.body) {
+                Ok(v) => v,
+                Err(e) => return Response::error(400, &format!("body 不是 JSON：{e}")),
+            };
+            let path = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let who = body.get("who").and_then(|v| v.as_str()).unwrap_or("");
+            let minutes = body
+                .get("minutes")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(30);
+            match cercis_core::remote::claim(std::path::Path::new(path), who, minutes) {
+                Ok(msg) => Response::json(&json!({ "ok": true, "message": msg }).to_string()),
+                Err(e) => Response::error(400, &e.to_string()),
+            }
+        }
+
+        "/api/remote/release" => {
+            if req.method != "POST" {
+                return Response::error(400, "POST only");
+            }
+            let body: Value = match serde_json::from_str(&req.body) {
+                Ok(v) => v,
+                Err(e) => return Response::error(400, &format!("body 不是 JSON：{e}")),
+            };
+            let path = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let who = body.get("who").and_then(|v| v.as_str()).unwrap_or("");
+            match cercis_core::remote::release(std::path::Path::new(path), who) {
+                Ok(n) => Response::json(&json!({ "ok": true, "cleared": n }).to_string()),
+                Err(e) => Response::error(400, &e.to_string()),
+            }
+        }
+
+        // 远程凭据：只进系统钥匙串（口令只在这一次请求里用）
+        "/api/remote/credential" => {
+            if req.method != "POST" {
+                return Response::error(400, "POST only");
+            }
+            let body: Value = match serde_json::from_str(&req.body) {
+                Ok(v) => v,
+                Err(e) => return Response::error(400, &format!("body 不是 JSON：{e}")),
+            };
+            let path = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let name = body.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            if let Some(secret) = body.get("password").and_then(|v| v.as_str()) {
+                match cercis_core::remote::credential_set(std::path::Path::new(path), name, secret) {
+                    Ok(account) => Response::json(
+                        &json!({ "ok": true, "keychain_account": account }).to_string(),
+                    ),
+                    Err(e) => Response::error(400, &e.to_string()),
+                }
+            } else {
+                match cercis_core::remote::credential_delete(std::path::Path::new(path), name) {
+                    Ok(removed) => {
+                        Response::json(&json!({ "ok": true, "removed": removed }).to_string())
+                    }
+                    Err(e) => Response::error(400, &e.to_string()),
+                }
+            }
+        }
+
+        // 工作副本：状态 / 建 / 双向同步（FR-N03 / FR-N07）
+        "/api/workcopy" => {
+            let Some(path) = req.query.get("path") else {
+                return Response::error(400, lang.t("缺少 path 参数", "missing path parameter"));
+            };
+            let root = std::path::Path::new(path);
+            if !root.join("_labnote/workcopy.yaml").exists() {
+                return Response::json(
+                    &json!({ "ok": true, "is_workcopy": false }).to_string(),
+                );
+            }
+            match cercis_core::remote::workcopy_status(root) {
+                Ok(st) => Response::json(
+                    &json!({
+                        "ok": true, "is_workcopy": true,
+                        "summary": st.summary(), "status": st,
+                    })
+                    .to_string(),
+                ),
+                Err(e) => Response::error(400, &e.to_string()),
+            }
+        }
+
+        "/api/workcopy/create" => {
+            if req.method != "POST" {
+                return Response::error(400, "POST only");
+            }
+            let body: Value = match serde_json::from_str(&req.body) {
+                Ok(v) => v,
+                Err(e) => return Response::error(400, &format!("body 不是 JSON：{e}")),
+            };
+            let main = body.get("main").and_then(|v| v.as_str()).unwrap_or("");
+            let to = body.get("to").and_then(|v| v.as_str()).unwrap_or("");
+            let name = body.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            if main.is_empty() || to.is_empty() {
+                return Response::error(
+                    400,
+                    lang.t("需要 main 与 to", "main and to are required"),
+                );
+            }
+            match cercis_core::remote::workcopy_create(
+                std::path::Path::new(main),
+                std::path::Path::new(to),
+                name,
+            ) {
+                Ok(wc) => Response::json(
+                    &json!({ "ok": true, "main": wc.main, "to": to }).to_string(),
+                ),
+                Err(e) => Response::error(400, &e.to_string()),
+            }
+        }
+
+        "/api/workcopy/sync" => {
+            if req.method != "POST" {
+                return Response::error(400, "POST only");
+            }
+            let body: Value = match serde_json::from_str(&req.body) {
+                Ok(v) => v,
+                Err(e) => return Response::error(400, &format!("body 不是 JSON：{e}")),
+            };
+            let copy = body.get("copy").and_then(|v| v.as_str()).unwrap_or("");
+            let dry_run = body
+                .get("dry_run")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if copy.is_empty() {
+                return Response::error(400, lang.t("缺少 copy", "missing copy"));
+            }
+            match cercis_core::remote::workcopy_sync(std::path::Path::new(copy), dry_run) {
+                Ok(rep) => Response::json(
+                    &json!({
+                        "ok": true,
+                        "dry_run": rep.dry_run,
+                        "summary": rep.summary(),
+                        "conflicts_total": rep.conflicts_total,
+                        "pulled_added": rep.pulled.added,
+                        "pushed_added": rep.pushed.added,
+                        "notes": rep.notes,
+                    })
+                    .to_string(),
+                ),
+                Err(e) => Response::error(400, &e.to_string()),
             }
         }
 
@@ -1762,6 +2176,166 @@ fn desired_diff(project: &str, desired: &cercis_core::Desired) -> cercis_core::D
     cercis_core::desired::diff(desired, &installs, &state, &known)
 }
 
+/// 待办标准列（§5.2.11）。
+const TASK_COLUMNS: [&str; 9] = [
+    "task_id",
+    "title",
+    "due_date",
+    "status",
+    "priority",
+    "related_event_id",
+    "notes",
+    "created_at",
+    "done_at",
+];
+
+/// 读待办：返回（表是否存在，按"今天/本周/逾期"分好组的任务）。
+///
+/// 分组规则（界面侧语义，内核不管）：
+/// - `overdue`：到期日 < 今天，且未完成
+/// - `today`：到期日 == 今天，且未完成
+/// - `this_week`：今天 < 到期日 ≤ 本周日，且未完成
+/// - `later`：更晚，或没写到期日
+/// - `done`：已完成（不论日期）
+fn read_tasks(path: &str) -> Result<(bool, Value), cercis_core::CercisError> {
+    let p = Project::open(path, None)?;
+    let table = match p.store.load_table("tasks", &[]) {
+        Ok(t) => t,
+        Err(_) => return Ok((false, json!({}))),
+    };
+    let today = chrono::Local::now().date_naive();
+    // 本周日（周一为一周之始）
+    let weekday = today.weekday().num_days_from_monday() as i64;
+    let week_end = today + chrono::Duration::days(6 - weekday);
+
+    let mut buckets: std::collections::BTreeMap<String, Vec<Value>> =
+        std::collections::BTreeMap::new();
+    for key in ["overdue", "today", "this_week", "later", "done"] {
+        buckets.insert(key.to_string(), Vec::new());
+    }
+    for r in &table.rows {
+        let status = r.get("status").cloned().unwrap_or_default();
+        let done = status.contains("完成") || status.eq_ignore_ascii_case("done");
+        let due_raw = r.get("due_date").cloned().unwrap_or_default();
+        let due = chrono::NaiveDate::parse_from_str(due_raw.trim(), "%Y-%m-%d").ok();
+        let bucket = if done {
+            "done"
+        } else {
+            match due {
+                Some(d) if d < today => "overdue",
+                Some(d) if d == today => "today",
+                Some(d) if d <= week_end => "this_week",
+                _ => "later",
+            }
+        };
+        buckets.get_mut(bucket).unwrap().push(json!({
+            "task_id": r.get("task_id"),
+            "title": r.get("title"),
+            "due_date": due_raw,
+            "status": status,
+            "priority": r.get("priority"),
+            "related_event_id": r.get("related_event_id"),
+            "notes": r.get("notes"),
+            "created_at": r.get("created_at"),
+            "done_at": r.get("done_at"),
+            "bucket": bucket,
+        }));
+    }
+    let mut out = serde_json::Map::new();
+    for (k, v) in buckets {
+        out.insert(k, Value::Array(v));
+    }
+    Ok((true, Value::Object(out)))
+}
+
+/// 建一条待办（没有表就按标准列建）。
+fn add_task(path: &str, body: &Value) -> Result<String, cercis_core::CercisError> {
+    let p = Project::open(path, None)?;
+    let _ = p.store.load_table("tasks", &TASK_COLUMNS)?;
+    let today = chrono::Local::now().date_naive();
+    let seq = p
+        .store
+        .load_table("tasks", &[])
+        .map(|t| t.rows.len() + 1)
+        .unwrap_or(1);
+    let id = format!("TK-{}-{:03}", today.format("%Y%m%d"), seq);
+    let mut row = cercis_core::table::Row::new();
+    row.insert("task_id".into(), id.clone());
+    row.insert(
+        "title".into(),
+        body.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+    );
+    row.insert(
+        "due_date".into(),
+        body.get("due_date").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+    );
+    row.insert("status".into(), "待办".into());
+    row.insert(
+        "priority".into(),
+        body.get("priority").and_then(|v| v.as_str()).unwrap_or("中").to_string(),
+    );
+    row.insert(
+        "related_event_id".into(),
+        body.get("related_event_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+    );
+    row.insert(
+        "notes".into(),
+        body.get("notes").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+    );
+    row.insert("created_at".into(), today.format("%Y-%m-%d").to_string());
+    row.insert("done_at".into(), String::new());
+    p.store
+        .append_row("tasks", &TASK_COLUMNS, row, &id, "新增待办")?;
+    Ok(id)
+}
+
+/// 勾选完成/取消：**改当前行 + 写一条更正记录**。
+///
+/// 待办状态是"可变字段"：改它时把前值交给历史对象库保管（任何一次改动都能还原），
+/// 同时在 `corrections.csv` 留一条"旧值 → 新值 + 原因"，与其它更正同一本账。
+fn set_task_done(
+    path: &str,
+    task_id: &str,
+    done: bool,
+) -> Result<(String, String), cercis_core::CercisError> {
+    let p = Project::open(path, None)?;
+    let mut table = p.store.load_table("tasks", &TASK_COLUMNS)?;
+    let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
+    let new_status = if done { "已完成" } else { "待办" };
+    let new_done_at = if done { today.clone() } else { String::new() };
+    let mut old_status = String::new();
+    let mut found = false;
+    for r in table.rows.iter_mut() {
+        if r.get("task_id").map(|s| s.as_str()) == Some(task_id) {
+            old_status = r.get("status").cloned().unwrap_or_default();
+            r.insert("status".into(), new_status.to_string());
+            r.insert("done_at".into(), new_done_at.clone());
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        return Err(cercis_core::CercisError::NotFound(format!(
+            "没有这条待办：{task_id}"
+        )));
+    }
+    p.store.save_table(
+        &table,
+        "update",
+        &format!("勾选待办 {task_id}：{old_status} → {new_status}"),
+    )?;
+    p.store.correct(
+        "tasks",
+        task_id,
+        "status",
+        &old_status,
+        new_status,
+        if done { "在 app 里勾选完成" } else { "在 app 里取消完成" },
+        "app:todos",
+    )?;
+    Ok((old_status, new_status.to_string()))
+}
+
 /// 从仓库地址推一个市场 id（`.../cercis-kits-research.git` → `cercis-kits-research`）。
 fn default_market_id(repository: &str) -> String {
     repository
@@ -2153,6 +2727,260 @@ mod tests {
         let body: Value = serde_json::from_str(&res.body).unwrap();
         assert_eq!(body["ok"], true);
         assert!(cercis_core::accounts::current(&project).unwrap().is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 待办（§5.2.11）：加一条 → 分桶（逾期/今天/本周）→ 勾选完成 → 留更正与流水。
+    #[test]
+    fn todo_endpoints_add_bucket_and_complete() {
+        let dir = std::env::temp_dir().join("cercis-app-todos-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = share_env();
+        let project = dir.join("proj");
+        cercis_core::Project::create(&project, "待办试验", Default::default()).unwrap();
+        let path = project.to_str().unwrap();
+
+        // 还没有 tasks.csv
+        let res = handle(&req("GET", "/api/todos", &[("path", path)], ""));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["exists"], false);
+
+        // 加三条：昨天（逾期）、今天、下个月
+        let today = chrono::Local::now().date_naive();
+        let yesterday = today - chrono::Duration::days(1);
+        let later = today + chrono::Duration::days(40);
+        for (title, due) in [
+            ("昨天的活", yesterday.format("%Y-%m-%d").to_string()),
+            ("今天的活", today.format("%Y-%m-%d").to_string()),
+            ("下个月的活", later.format("%Y-%m-%d").to_string()),
+        ] {
+            let res = handle(&req(
+                "POST",
+                "/api/todos/add",
+                &[],
+                &format!(r#"{{"path":"{path}","title":"{title}","due_date":"{due}","priority":"高"}}"#),
+            ));
+            let body: Value = serde_json::from_str(&res.body).unwrap();
+            assert_eq!(body["ok"], true, "{body}");
+        }
+
+        let res = handle(&req("GET", "/api/todos", &[("path", path)], ""));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["exists"], true);
+        assert_eq!(body["tasks"]["overdue"].as_array().unwrap().len(), 1);
+        assert_eq!(body["tasks"]["today"].as_array().unwrap().len(), 1);
+        assert_eq!(body["tasks"]["later"].as_array().unwrap().len(), 1);
+        let overdue_id = body["tasks"]["overdue"][0]["task_id"].as_str().unwrap().to_string();
+
+        // 勾选完成：改当前行 + 写更正记录
+        let res = handle(&req(
+            "POST",
+            "/api/todos/done",
+            &[],
+            &format!(
+                r#"{{"path":"{path}","task_id":"{overdue_id}","done":true}}"#
+            ),
+        ));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["ok"], true, "{body}");
+        assert_eq!(body["old"], "待办");
+        assert_eq!(body["new"], "已完成");
+
+        let res = handle(&req("GET", "/api/todos", &[("path", path)], ""));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["tasks"]["overdue"].as_array().unwrap().len(), 0);
+        assert_eq!(body["tasks"]["done"].as_array().unwrap().len(), 1);
+
+        // 更正表里有记录，流水里也有
+        let corrections =
+            std::fs::read_to_string(project.join("tables/corrections.csv")).unwrap();
+        assert!(corrections.contains(&overdue_id), "{corrections}");
+        assert!(corrections.contains("已完成"), "{corrections}");
+        let log = std::fs::read_to_string(project.join("tables/change_log.csv")).unwrap();
+        assert!(log.contains("勾选待办"), "{log}");
+
+        // 时间线：这条记录的版本链看得到更正
+        let res = handle(&req(
+            "GET",
+            "/api/history/record",
+            &[("path", path), ("table", "tasks"), ("id", &overdue_id)],
+            "",
+        ));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["corrections"].as_array().unwrap().len(), 1);
+        assert!(body["entries"].as_array().unwrap().len() >= 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 历史审阅：按表/人筛流水（FR-M07）。
+    #[test]
+    fn history_filters_by_table_and_user() {
+        let dir = std::env::temp_dir().join("cercis-app-history-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = share_env();
+        let project = dir.join("proj");
+        let p = cercis_core::Project::create(&project, "历史试验", Default::default()).unwrap();
+        let mut row = cercis_core::table::Row::new();
+        row.insert("record_id".into(), "R-1".into());
+        p.store
+            .append_row_extending("records", &[], row, "R-1", "写一条")
+            .unwrap();
+        let path = project.to_str().unwrap();
+
+        let res = handle(&req("GET", "/api/history", &[("path", path)], ""));
+        let all: Value = serde_json::from_str(&res.body).unwrap();
+        assert!(all["count"].as_u64().unwrap() >= 2, "{all}");
+
+        let res = handle(&req(
+            "GET",
+            "/api/history",
+            &[("path", path), ("table", "records")],
+            "",
+        ));
+        let only_records: Value = serde_json::from_str(&res.body).unwrap();
+        assert!(only_records["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e["target_table"] == "records"));
+
+        let res = handle(&req(
+            "GET",
+            "/api/history",
+            &[("path", path), ("user", "查无此人")],
+            "",
+        ));
+        let none: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(none["count"], 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// NAS：登记网络位置（本机目录当 NAS）→ 看到它 → 体检 → 移除；工作副本建/同步。
+    #[test]
+    fn nas_and_workcopy_endpoints() {
+        let dir = std::env::temp_dir().join("cercis-app-nas-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = share_env();
+        let main = dir.join("主副本");
+        let copy = dir.join("本地副本");
+        let p = cercis_core::Project::create(&main, "NAS 试验", Default::default()).unwrap();
+        let mut row = cercis_core::table::Row::new();
+        row.insert("record_id".into(), "R-1".into());
+        p.store
+            .append_row_extending("records", &[], row, "R-1", "主副本写入")
+            .unwrap();
+        let main_s = main.to_str().unwrap();
+
+        // 登记
+        let res = handle(&req(
+            "POST",
+            "/api/remote/add",
+            &[],
+            &format!(
+                r#"{{"path":"{main_s}","name":"nas","remote_path":"{main_s}","kind":"local"}}"#
+            ),
+        ));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["ok"], true, "{body}");
+
+        // 列表里能看到，且认得出"可达"
+        let res = handle(&req("GET", "/api/remote", &[("path", main_s)], ""));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["remotes"][0]["name"], "nas");
+        assert_eq!(body["remotes"][0]["reachable"], true);
+
+        // 体检
+        let res = handle(&req(
+            "GET",
+            "/api/remote/test",
+            &[("path", main_s), ("name", "nas")],
+            "",
+        ));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["ok"], true, "{body}");
+        assert_eq!(body["test"]["writable"], true);
+
+        // 写租约：取了之后列表里有
+        let res = handle(&req(
+            "POST",
+            "/api/remote/claim",
+            &[],
+            &format!(r#"{{"path":"{main_s}","who":"wenhuan@laptop","minutes":30}}"#),
+        ));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["ok"], true, "{body}");
+        let res = handle(&req("GET", "/api/remote", &[("path", main_s)], ""));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["leases"].as_array().unwrap().len(), 1);
+        let res = handle(&req(
+            "POST",
+            "/api/remote/release",
+            &[],
+            &format!(r#"{{"path":"{main_s}","who":"wenhuan@laptop"}}"#),
+        ));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert!(body["cleared"].as_u64().unwrap() >= 1);
+
+        // 工作副本：建 → 两边各自记 → 同步 → 两边都齐
+        let res = handle(&req(
+            "POST",
+            "/api/workcopy/create",
+            &[],
+            &format!(
+                r#"{{"main":"{main_s}","to":"{}","name":"nas"}}"#,
+                copy.display()
+            ),
+        ));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["ok"], true, "{body}");
+
+        let pc = cercis_core::Project::open(&copy, None).unwrap();
+        let mut row = cercis_core::table::Row::new();
+        row.insert("record_id".into(), "R-2".into());
+        pc.store
+            .append_row_extending("records", &[], row, "R-2", "副本写入")
+            .unwrap();
+        let mut row = cercis_core::table::Row::new();
+        row.insert("record_id".into(), "R-3".into());
+        p.store
+            .append_row_extending("records", &[], row, "R-3", "主副本再写一条")
+            .unwrap();
+
+        let copy_s = copy.to_str().unwrap();
+        let res = handle(&req("GET", "/api/workcopy", &[("path", copy_s)], ""));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["is_workcopy"], true);
+        assert_eq!(body["status"]["verdict"], "needs-sync", "{body}");
+
+        let res = handle(&req(
+            "POST",
+            "/api/workcopy/sync",
+            &[],
+            &format!(r#"{{"copy":"{copy_s}","dry_run":false}}"#),
+        ));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["ok"], true, "{body}");
+        assert_eq!(body["conflicts_total"], 0);
+
+        for root in [&main, &copy] {
+            let t = cercis_core::table::Table::load(root.join("tables/records.csv")).unwrap();
+            assert_eq!(t.rows.len(), 3, "{root:?} 应有 3 条");
+        }
+
+        // 移除登记
+        let res = handle(&req(
+            "POST",
+            "/api/remote/remove",
+            &[],
+            &format!(r#"{{"path":"{main_s}","name":"nas"}}"#),
+        ));
+        let body: Value = serde_json::from_str(&res.body).unwrap();
+        assert_eq!(body["ok"], true);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
