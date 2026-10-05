@@ -182,7 +182,7 @@ pub fn handle(req: &Request) -> Response {
                         }
                     }
 
-                    let mut q_all = q.clone();
+                    let q_all = q.clone();
                     q = q.page(offset, limit);
                     match (p.query(table, q), p.query(table, q_all.clone())) {
                         (Ok(rows), Ok(all)) => {
@@ -2671,6 +2671,7 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
             body: body.to_string(),
+            header_token: None,
         }
     }
 

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Cercis
+Name[zh_CN]=Cercis 科研数据记录
+Comment=Local-first research data records (folder as database)
+Comment[zh_CN]=本地优先的科研数据记录（文件夹即数据库）
+Exec=__EXEC__
+Terminal=false
+Categories=Science;Office;Utility;
+StartupNotify=true
+Keywords=research;data;lab;科研;数据;

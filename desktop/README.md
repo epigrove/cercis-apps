@@ -1,6 +1,13 @@
 # 桌面端（desktop）
 
-macOS 先行；Windows / Linux 跟进。
+同一份代码，三个桌面平台 + 平板/手机浏览器：
+
+| 形态 | 怎么跑 | 状态 |
+|------|--------|------|
+| macOS / Windows / Linux | `cercis-app`（默认只绑 `127.0.0.1:8765`，自动开浏览器） | 三平台**交叉编译检查通过**（macOS 本机跑测试） |
+| 平板 / 手机（同一局域网） | `cercis-app --lan`（打印带令牌的地址，平板浏览器直接开） | ✅ 已实现；媒体（原音/原图）也带令牌 |
+
+打包脚本与平台差异见 [`packaging/README.md`](packaging/README.md)。
 
 ## 已实现
 
@@ -14,7 +21,11 @@ macOS 先行；Windows / Linux 跟进。
 cd apps/desktop
 cargo run                      # 默认 http://127.0.0.1:8765
 cargo run -- --port 9000 --no-browser
+cargo run -- --lan             # 局域网（平板/手机），打印带令牌的地址
 ```
+
+> **局域网模式**：`--lan` 会随机生成令牌；不带令牌的请求一律 401。
+> 只在可信网络里开——同网段的人虽然拿不到数据，但能扫到端口在监听。
 
 要看到工具包的功能，需要让 app 找得到插件与内核：
 

@@ -17,6 +17,8 @@ pub struct Request {
     pub path: String,
     pub query: BTreeMap<String, String>,
     pub body: String,
+    /// `X-Cercis-Token` 头（LAN 模式下 app 的界面会带上）
+    pub header_token: Option<String>,
 }
 
 /// 响应。
@@ -58,19 +60,81 @@ impl Response {
     }
 }
 
-/// 启动服务器；对每个请求调用 `handler`。
-pub fn serve<F>(addr: &str, handler: F) -> std::io::Result<()>
+/// 访问闸门（S14：平板/手机等**别的设备**通过局域网访问时用）。
+///
+/// - `local_only`（默认）：只绑本机 + 校验 Host，防 DNS rebinding；
+/// - `lan(token)`：绑局域网，**每个请求都要带令牌**（启动时打印的 URL 里含令牌）。
+///   局域网里没有令牌连不上，但**同网段的人能扫到端口**——所以只在可信网络里开。
+#[derive(Clone, Debug)]
+pub struct Guard {
+    /// 只允许本机（默认）
+    pub local_only: bool,
+    /// LAN 模式的令牌（`None` = 不校验）
+    pub token: Option<String>,
+}
+
+impl Guard {
+    pub fn local_only() -> Self {
+        Self {
+            local_only: true,
+            token: None,
+        }
+    }
+
+    pub fn lan(token: impl Into<String>) -> Self {
+        Self {
+            local_only: false,
+            token: Some(token.into()),
+        }
+    }
+
+    /// 这个请求放行吗？（带原因，方便调试与测试）
+    pub fn check(&self, req: &Request, host_header: Option<&str>) -> Result<(), (u16, String)> {
+        // 1) 本机模式：只认本机 Host（防 DNS rebinding）
+        if self.local_only {
+            if let Some(host) = host_header {
+                let host_only = host.split(':').next().unwrap_or("");
+                if !matches!(host_only, "127.0.0.1" | "localhost" | "[::1]") {
+                    return Err((403, "只允许本机访问（Host 校验失败）".to_string()));
+                }
+            }
+        }
+        // 2) 令牌：LAN 与"带令牌的本机模式"都要对
+        if let Some(expected) = &self.token {
+            let given = req
+                .query
+                .get("token")
+                .cloned()
+                .or_else(|| req.header_token.clone())
+                .unwrap_or_default();
+            if given != *expected {
+                return Err((
+                    401,
+                    "令牌不对（LAN 模式要带上启动时打印的那个 token）".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// 带闸门的启动。
+pub fn serve_with<F>(addr: &str, guard: Guard, handler: F) -> std::io::Result<()>
 where
     F: Fn(&Request) -> Response + Send + Sync + 'static,
 {
     let listener = TcpListener::bind(addr)?;
     println!("Cercis 界面已启动：http://{addr}");
-    println!("（仅本机可访问；按 Ctrl+C 退出）");
+    if guard.local_only {
+        println!("（仅本机可访问；按 Ctrl+C 退出）");
+    } else {
+        println!("（局域网模式：要带 ?token=… 才能访问；只在你信任的网络里开）");
+    }
 
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                if let Err(e) = handle_connection(stream, &handler) {
+                if let Err(e) = handle_connection(stream, &guard, &handler) {
                     eprintln!("请求处理失败: {e}");
                 }
             }
@@ -80,7 +144,7 @@ where
     Ok(())
 }
 
-fn handle_connection<F>(stream: TcpStream, handler: &F) -> std::io::Result<()>
+fn handle_connection<F>(stream: TcpStream, guard: &Guard, handler: &F) -> std::io::Result<()>
 where
     F: Fn(&Request) -> Response,
 {
@@ -108,16 +172,6 @@ where
         }
     }
 
-    // Host 校验（防 DNS rebinding：只接受本机名）
-    if let Some(host) = headers.get("host") {
-        let host_only = host.split(':').next().unwrap_or("");
-        if !matches!(host_only, "127.0.0.1" | "localhost" | "[::1]") {
-            let resp = Response::error(403, "只允许本机访问（Host 校验失败）");
-            write_response(&mut stream, &resp)?;
-            return Ok(());
-        }
-    }
-
     // 正文
     let mut body = String::new();
     if let Some(len) = headers.get("content-length") {
@@ -139,7 +193,14 @@ where
         path,
         query,
         body,
+        header_token: headers.get("x-cercis-token").cloned(),
     };
+    // 闸门：Host 校验（本机模式）+ 令牌（LAN 模式）
+    if let Err((status, msg)) = guard.check(&req, headers.get("host").map(|s| s.as_str())) {
+        let resp = Response::error(status, &msg);
+        write_response(&mut stream, &resp)?;
+        return Ok(());
+    }
     let resp = handler(&req);
     write_response(&mut stream, &resp)?;
     Ok(())
@@ -246,10 +307,85 @@ fn status_text(code: u16) -> &'static str {
     match code {
         200 => "OK",
         400 => "Bad Request",
+        401 => "Unauthorized",
         403 => "Forbidden",
         404 => "Not Found",
         409 => "Conflict",
         500 => "Internal Server Error",
         _ => "OK",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn req_with(path: &str, query: &[(&str, &str)], token: Option<&str>) -> Request {
+        Request {
+            method: "GET".into(),
+            path: path.into(),
+            query: query
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            body: String::new(),
+            header_token: token.map(|s| s.to_string()),
+        }
+    }
+
+    #[test]
+    fn local_mode_rejects_foreign_hosts() {
+        let g = Guard::local_only();
+        assert!(g
+            .check(&req_with("/", &[], None), Some("127.0.0.1:8765"))
+            .is_ok());
+        assert!(g
+            .check(&req_with("/", &[], None), Some("localhost:8765"))
+            .is_ok());
+        let err = g
+            .check(&req_with("/", &[], None), Some("evil.example:8765"))
+            .unwrap_err();
+        assert_eq!(err.0, 403);
+    }
+
+    #[test]
+    fn lan_mode_requires_the_token() {
+        let g = Guard::lan("s3cret");
+        // 局域网里 Host 是内网 IP，不拦（靠令牌）
+        assert!(g
+            .check(&req_with("/", &[], None), Some("192.168.1.5:8765"))
+            .is_err());
+        assert!(g
+            .check(
+                &req_with("/", &[("token", "wrong")], None),
+                Some("192.168.1.5")
+            )
+            .is_err());
+        assert!(g
+            .check(
+                &req_with("/", &[("token", "s3cret")], None),
+                Some("192.168.1.5")
+            )
+            .is_ok());
+        // 也可以走请求头（给脚本用）
+        assert!(g
+            .check(&req_with("/", &[], Some("s3cret")), Some("192.168.1.5"))
+            .is_ok());
+    }
+
+    #[test]
+    fn token_can_also_guard_local_mode() {
+        let g = Guard {
+            local_only: true,
+            token: Some("t".into()),
+        };
+        assert!(g.check(&req_with("/", &[], None), Some("127.0.0.1")).is_err());
+        assert!(g
+            .check(&req_with("/", &[("token", "t")], None), Some("127.0.0.1"))
+            .is_ok());
+        // 本机模式下 Host 仍然要校验
+        assert!(g
+            .check(&req_with("/", &[("token", "t")], None), Some("evil.example"))
+            .is_err());
     }
 }

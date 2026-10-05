@@ -810,6 +810,8 @@ const I18N = {
   }
 };
 let lang = "zh";
+// 局域网模式（平板/手机访问）：令牌从地址栏带进来，之后每个请求都带上它
+const TOKEN = new URLSearchParams(location.search).get("token") || "";
 let project = null;
 let activeTable = null;
 let plugins = [];          // 插件清单缓存（含命令与可运行状态）
@@ -824,11 +826,14 @@ function t() { return I18N[lang]; }
 
 async function apiGet(path, params) {
   const q = new URLSearchParams({ ...(params || {}), lang });
+  if (TOKEN) q.set("token", TOKEN);
   const r = await fetch(path + "?" + q.toString());
   return await r.json();
 }
 async function apiPost(path, body) {
-  const r = await fetch(path + "?" + new URLSearchParams({lang}), {
+  const params = { lang };
+  if (TOKEN) params.token = TOKEN;
+  const r = await fetch(path + "?" + new URLSearchParams(params), {
     method: "POST", headers: {"Content-Type": "application/json"},
     body: JSON.stringify(body)
   });
@@ -1153,7 +1158,7 @@ async function openScribeSession(id) {
     const audio = document.createElement("audio");
     audio.controls = true;
     audio.preload = "none";
-    audio.src = `/api/media?path=${encodeURIComponent(project.path)}&file=${encodeURIComponent(f)}`;
+    audio.src = `/api/media?path=${encodeURIComponent(project.path)}&file=${encodeURIComponent(f)}${TOKEN ? "&token=" + encodeURIComponent(TOKEN) : ""}`;
     row.appendChild(label);
     row.appendChild(audio);
     box.appendChild(row);
@@ -1163,7 +1168,7 @@ async function openScribeSession(id) {
     const wrap = document.createElement("div");
     wrap.style.cssText = "margin:6px 0;";
     const img = document.createElement("img");
-    img.src = `/api/media?path=${encodeURIComponent(project.path)}&file=${encodeURIComponent(f)}`;
+    img.src = `/api/media?path=${encodeURIComponent(project.path)}&file=${encodeURIComponent(f)}${TOKEN ? "&token=" + encodeURIComponent(TOKEN) : ""}`;
     img.alt = f.split("/").pop();
     img.style.cssText = "max-height:160px; border:1px solid #ddd; cursor:zoom-in;";
     img.onclick = () => {
