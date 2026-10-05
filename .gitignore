@@ -2,3 +2,7 @@
 target/
 **/*.rs.bk
 .DS_Store
+# Playwright CLI 的临时产物（验收脚本会把要留的截图复制到仓库根的 output/playwright/）
+.playwright-cli/
+# 界面验收：报告（UI-REPORT.md）入库，截图可复跑生成、不入库
+output/playwright/*.png
