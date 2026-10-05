@@ -372,9 +372,17 @@
       <input id="recordTable" style="width:150px;" />
       <input id="recordId" style="width:170px;" />
       <button id="recordHistoryBtn"></button>
+      <button id="recordDiffBtn"></button>
       <span class="status" id="recordHistoryStatus"></span>
     </div>
     <pre class="muted" id="recordHistoryOut" style="white-space:pre-wrap; max-height:320px; overflow:auto;"></pre>
+    <h3 style="margin-top:12px; font-size:15px;" id="snapshotDiffTitle"></h3>
+    <div class="row">
+      <input id="diffFrom" style="width:300px;" />
+      <input id="diffTo" style="width:300px;" />
+      <button id="snapshotDiffBtn"></button>
+    </div>
+    <pre class="muted" id="diffOut" style="white-space:pre-wrap; max-height:360px; overflow:auto;"></pre>
   </div>
 
   <div class="card" id="toolsCard" style="display:none;">
@@ -589,6 +597,9 @@ const I18N = {
     recordTablePh: "表名，如 records",
     recordIdPh: "记录编号，如 R-1",
     recordHistory: "看版本链",
+    recordDiffTitle: "看差异",
+    snapshotDiffTitle: "比两份快照（从历史里挑两个指纹）",
+    snapshotDiffPh: "两个指纹都要填（从上面的流水里复制 hash_before / hash_after）",
     // NAS（FR-N01–N07）
     nasTitle: "网络位置（NAS）",
     nasNote: "内核只认挂载好的路径：先用系统挂载（Finder「连接到服务器」/Windows 映射网络驱动器），再把挂载点登记到这里。口令只进系统钥匙串，不写进项目。",
@@ -785,6 +796,9 @@ const I18N = {
     recordTablePh: "table name, e.g. records",
     recordIdPh: "record id, e.g. R-1",
     recordHistory: "Show chain",
+    recordDiffTitle: "Show diff",
+    snapshotDiffTitle: "Compare two snapshots (paste two hashes from the log above)",
+    snapshotDiffPh: "fill both hashes (copy hash_before / hash_after from the log)",
     // NAS (FR-N01–N07)
     nasTitle: "Network locations (NAS)",
     nasNote: "The kernel only knows a mounted path: mount it first with the OS, then register the mount point here. Passwords go to the system keychain, never into the project.",
@@ -1332,6 +1346,14 @@ async function loadHistory() {
   $("logUserFilter").placeholder = t().logUserPh;
   $("logDeviceFilter").placeholder = t().logDevicePh;
   $("logFilterBtn").textContent = t().logFilter;
+  $("recordTable").placeholder = t().recordTablePh;
+  $("recordId").placeholder = t().recordIdPh;
+  $("recordHistoryBtn").textContent = t().recordHistory;
+  $("recordDiffBtn").textContent = t().recordDiffTitle;
+  $("snapshotDiffTitle").textContent = t().snapshotDiffTitle;
+  $("diffFrom").placeholder = "from hash";
+  $("diffTo").placeholder = "to hash";
+  $("snapshotDiffBtn").textContent = t().recordDiffTitle;
   const params = { path: project.path, limit: 200 };
   if ($("logTableFilter").value.trim()) params.table = $("logTableFilter").value.trim();
   if ($("logUserFilter").value.trim()) params.user = $("logUserFilter").value.trim();
@@ -1368,6 +1390,50 @@ async function loadRecordHistory() {
     lines.push(`更正 ${c.ts}: ${c.field} ${c.old} → ${c.new}（${c.reason || ""}；${c.user || ""}）`);
   }
   $("recordHistoryOut").textContent = lines.join("\n");
+}
+
+// 记录级差异（FR-M05）：字段级"旧 → 生效值" + 更正理由
+async function loadRecordDiff() {
+  if (!project) return;
+  const table = $("recordTable").value.trim();
+  const id = $("recordId").value.trim();
+  if (!table || !id) { alert(t().recordDiffTitle); return; }
+  $("recordHistoryStatus").textContent = "…";
+  const res = await apiGet("/api/diff", { path: project.path, table, id });
+  if (!res.ok) { $("diffOut").textContent = res.error || ""; $("recordHistoryStatus").textContent = "✗"; return; }
+  $("recordHistoryStatus").textContent = "✓";
+  const d = res.diff;
+  const lines = [`${res.summary}`];
+  for (const c of (d.changes || [])) {
+    const mark = c.kind === "added" ? "+" : (c.kind === "removed" ? "−" : "±");
+    lines.push(`  ${mark} ${c.field}：${c.old || "（空）"} → ${c.new || "（空）"}`);
+  }
+  for (const c of (d.corrections || [])) {
+    lines.push(`  更正 ${c.ts}：${c.field} ${c.old} → ${c.new}（${c.reason || ""}｜${c.user || ""}）`);
+  }
+  for (const n of (d.notes || [])) lines.push("注：" + n);
+  $("diffOut").textContent = lines.join("\n");
+}
+
+// 快照级差异：两份历史对象逐行比
+async function loadSnapshotDiff() {
+  if (!project) return;
+  const from = $("diffFrom").value.trim();
+  const to = $("diffTo").value.trim();
+  if (!from || !to) { alert(t().snapshotDiffPh); return; }
+  $("recordHistoryStatus").textContent = "…";
+  const res = await apiGet("/api/diff", { path: project.path, from, to });
+  if (!res.ok) { $("diffOut").textContent = res.error || ""; return; }
+  $("recordHistoryStatus").textContent = "✓";
+  const d = res.diff;
+  const lines = [res.summary];
+  if (!d.truncated) {
+    for (const l of (d.lines || [])) {
+      if (l.op !== " ") lines.push(`${l.op} ${l.text}`);
+    }
+  }
+  for (const n of (d.notes || [])) lines.push("注：" + n);
+  $("diffOut").textContent = lines.join("\n");
 }
 
 // ———— NAS（FR-N01–N07）：网络位置、体检、写租约、工作副本 ————
@@ -2410,7 +2476,9 @@ $("pageSize").onchange = () => { pageOffset = 0; loadTables(); };
 $("filterInput").addEventListener("keydown", (e) => { if (e.key === "Enter") { pageOffset = 0; loadTables(); } });
 $("todoAddBtn").onclick = addTodo;
 $("logFilterBtn").onclick = loadHistory;
-$("recordHistoryBtn").onclick = loadRecordHistory;
+  $("recordHistoryBtn").onclick = loadRecordHistory;
+  $("recordDiffBtn").onclick = loadRecordDiff;
+  $("snapshotDiffBtn").onclick = loadSnapshotDiff;
 $("nasAddBtn").onclick = addNas;
 $("scribeReloadBtn").onclick = loadScribe;
 $("wcCreateBtn").onclick = createWorkcopy;

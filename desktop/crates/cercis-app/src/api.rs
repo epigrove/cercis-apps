@@ -653,6 +653,52 @@ pub fn handle(req: &Request) -> Response {
         }
 
         // ———— 历史审阅（FR-M02/M05/M07）：流水按表/人/设备筛，单条记录看版本链 ————
+        // 差异对比（FR-M05）：记录级或快照级
+        "/api/diff" => {
+            let Some(path) = req.query.get("path") else {
+                return Response::error(400, lang.t("缺少 path 参数", "missing path parameter"));
+            };
+            let root = std::path::Path::new(path);
+            match (
+                req.query.get("table"),
+                req.query.get("id"),
+                req.query.get("from"),
+                req.query.get("to"),
+            ) {
+                (Some(table), Some(id), _, _) => {
+                    match cercis_core::diff::record_diff(root, table, id) {
+                        Ok(d) => Response::json(
+                            &json!({
+                                "ok": true, "kind": "record",
+                                "summary": d.summary(), "diff": d,
+                            })
+                            .to_string(),
+                        ),
+                        Err(e) => Response::error(400, &e.to_string()),
+                    }
+                }
+                (_, _, Some(from), Some(to)) => {
+                    match cercis_core::diff::snapshot_diff(root, from, to) {
+                        Ok(d) => Response::json(
+                            &json!({
+                                "ok": true, "kind": "snapshot",
+                                "summary": d.summary(), "diff": d,
+                            })
+                            .to_string(),
+                        ),
+                        Err(e) => Response::error(400, &e.to_string()),
+                    }
+                }
+                _ => Response::error(
+                    400,
+                    lang.t(
+                        "要比什么？给 table+id（记录）或 from+to（快照）",
+                        "give table+id (record) or from+to (snapshot)",
+                    ),
+                ),
+            }
+        }
+
         "/api/history" => {
             let Some(path) = req.query.get("path") else {
                 return Response::error(400, lang.t("缺少 path 参数", "missing path parameter"));
@@ -3124,6 +3170,71 @@ mod tests {
         assert_eq!(body["ok"], true);
         assert_eq!(body["corrections"].as_array().unwrap().len(), 1);
         assert!(body["entries"].as_array().unwrap().len() >= 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 差异对比（FR-M05）：记录级 + 快照级，与命令行 `cercis diff` 同一套引擎。
+    #[test]
+    fn diff_endpoint_covers_record_and_snapshot() {
+        let dir = std::env::temp_dir().join("cercis-app-diff-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = share_env();
+        let project = dir.join("proj");
+        let p = cercis_core::Project::create(&project, "差异试验", Default::default()).unwrap();
+        let mut row = cercis_core::table::Row::new();
+        row.insert("record_id".into(), "R-1".into());
+        row.insert("value_num".into(), "12.5".into());
+        p.store
+            .append_row_extending("records", &[], row, "R-1", "写一条")
+            .unwrap();
+        p.store
+            .correct("records", "R-1", "value_num", "12.5", "12.7", "笔误", "")
+            .unwrap();
+        let path = project.to_str().unwrap();
+
+        // 记录级
+        let res = handle(&req(
+            "GET",
+            "/api/diff",
+            &[("path", path), ("table", "records"), ("id", "R-1")],
+            "",
+        ));
+        let body = body_json(&res);
+        assert_eq!(body["ok"], true, "{body}");
+        assert_eq!(body["kind"], "record");
+        let changes = body["diff"]["changes"].as_array().unwrap();
+        let value = changes.iter().find(|c| c["field"] == "value_num").unwrap();
+        assert_eq!(value["old"], "12.5");
+        assert_eq!(value["new"], "12.7", "生效值要算上更正");
+
+        // 快照级：拿两个历史指纹比
+        let log = p.store.read_change_log().unwrap();
+        let hashes: Vec<String> = log
+            .iter()
+            .filter(|e| e.target_table == "records" && !e.hash_after.is_empty())
+            .map(|e| e.hash_after.clone())
+            .collect();
+        if hashes.len() >= 2 {
+            let res = handle(&req(
+                "GET",
+                "/api/diff",
+                &[
+                    ("path", path),
+                    ("from", &hashes[0]),
+                    ("to", &hashes[hashes.len() - 1]),
+                ],
+                "",
+            ));
+            let body = body_json(&res);
+            assert_eq!(body["ok"], true, "{body}");
+            assert_eq!(body["kind"], "snapshot");
+        }
+
+        // 什么都不给 → 明确报错
+        let res = handle(&req("GET", "/api/diff", &[("path", path)], ""));
+        let body = body_json(&res);
+        assert_eq!(body["ok"], false);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
