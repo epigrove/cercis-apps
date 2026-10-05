@@ -613,6 +613,8 @@ const I18N = {
     wcSyncDry: "试运行同步",
     wcSync: "双向同步",
     wcNotWorkcopy: "当前打开的项目不是工作副本（没有 _labnote/workcopy.yaml）。",
+    wcHasConflicts: "已经同步完了；剩下的是冲突副本要人工挑一份（挑完删掉副本即可）。",
+    wcNeedsSync: "两边有新的变更：点「双向同步」即可（并集，本地永不被覆盖）。",
   },
   en: {
     slogan: "May Cerces safeguard your thoughts.",
@@ -807,6 +809,8 @@ const I18N = {
     wcSyncDry: "Dry-run sync",
     wcSync: "Sync both ways",
     wcNotWorkcopy: "The project you opened is not a working copy (no _labnote/workcopy.yaml).",
+    wcHasConflicts: "Sync is done; what remains are conflict copies that need a human pick (delete the copy once resolved).",
+    wcNeedsSync: "Both sides have new changes — click \u201csync both ways\u201d (union; local files are never overwritten).",
   }
 };
 let lang = "zh";
@@ -1434,7 +1438,12 @@ async function loadNas() {
   if (!wc.is_workcopy) {
     $("wcOut").textContent = t().wcNotWorkcopy;
   } else {
-    $("wcOut").textContent = wc.summary + "\n" + ((wc.status && wc.status.notes) || []).join("\n");
+    const wcVerdict = (wc.status && wc.status.verdict) || "";
+    const wcHint = wcVerdict === "has-conflicts"
+      ? t().wcHasConflicts + "\n"
+      : (wcVerdict === "needs-sync" ? t().wcNeedsSync + "\n" : "");
+    $("wcOut").textContent =
+      wc.summary + "\n" + wcHint + ((wc.status && wc.status.notes) || []).join("\n");
   }
 }
 
