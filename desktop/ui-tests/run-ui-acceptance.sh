@@ -68,6 +68,12 @@ shot() {  # 截图存到 $OUT/<名字>.png（Playwright CLI 自己决定临时�
 cleanup() {
   [ -n "$app_pid" ] && kill "$app_pid" 2>/dev/null
   pw close >/dev/null 2>&1
+  # Playwright CLI 的临时目录（截图已复制到 output/playwright，这里清干净，别污染仓库）
+  rm -rf "$PWD/.playwright-cli"
+  # 全绿时不留截图（二进制会污染"发布前扫描"）；失败时保留，或显式 KEEP_SCREENSHOTS=1
+  if [ "$fail" -eq 0 ] && [ "${KEEP_SCREENSHOTS:-0}" != "1" ]; then
+    rm -f "$OUT"/*.png
+  fi
 }
 trap cleanup EXIT
 
@@ -235,7 +241,7 @@ report="$OUT/UI-REPORT.md"
   echo "- 内核：\`$KERNEL\`"
   echo "- app：\`$APP\`"
   echo "- 结果：**通过 $pass ｜ 失败 $fail**"
-  echo "- 截图：$(ls "$OUT"/*.png 2>/dev/null | wc -l | tr -d ' ') 张（同目录 .png，不入库）"
+  echo "- 截图：$(ls "$OUT"/*.png 2>/dev/null | wc -l | tr -d ' ') 张（全绿时自动清掉、失败时才保留；要留就 KEEP_SCREENSHOTS=1 跑）"
   echo
   echo "## 这一轮验了什么"
   echo
