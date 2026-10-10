@@ -132,7 +132,9 @@ pub fn global_plugins_dir() -> Option<PathBuf> {
     for key in ["CERCIS_GLOBAL_PLUGINS", "CERCIS_PLUGINS"] {
         if let Some(p) = std::env::var_os(key) {
             let p = PathBuf::from(p);
-            if p.is_dir() {
+            // 环境变量是**明确指定**：目录还没建也照用（首次装机就是这种情况，
+            // 装的时候会建）。这样"指向一个还不存在的目录"不会被悄悄换成默认目录。
+            if !p.as_os_str().is_empty() {
                 return Some(p);
             }
         }

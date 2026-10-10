@@ -10,6 +10,7 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+packaging="$(cd "$here/.." && pwd)"
 repo="$(cd "$here/../../../.." && pwd)"     # Cercis/ 仓库根（apps/desktop/packaging/linux → 上四级）
 PREFIX="${PREFIX:-$HOME/.local}"
 
@@ -38,10 +39,20 @@ install -m 755 "$app_bin" "$PREFIX/bin/cercis-app"
 sed "s|__EXEC__|$PREFIX/bin/cercis-app|" "$here/cercis.desktop" \
   > "$PREFIX/share/applications/cercis.desktop"
 
+# 基础工具包（D35：app = 内核 + 基础工具包）。装到用户级插件目录，
+# 这样 app 一启动就找得到；装的过程走内核自己的安装通道（写台账、记指纹）。
+if [ "${SKIP_KITS:-0}" = "1" ]; then
+  echo "== 跳过基础工具包（SKIP_KITS=1）=="
+else
+  echo "== 装基础工具包 =="
+  CERCIS_BIN="$kernel_bin" bash "$packaging/install-basic-kits.sh"
+fi
+
 echo
 echo "装好了："
 echo "  命令行：$PREFIX/bin/cercis --help"
 echo "  桌面界面：$PREFIX/bin/cercis-app        # 只绑本机"
 echo "  平板/手机：$PREFIX/bin/cercis-app --lan   # 打印带令牌的局域网地址"
+echo "  插件：$HOME/.cercis/plugins（基础工具包，随包交付、不可删除，可停用或屏蔽）"
 echo
 echo "提醒：$PREFIX/bin 要加进 PATH（大多数发行版已默认包含 ~/.local/bin）。"

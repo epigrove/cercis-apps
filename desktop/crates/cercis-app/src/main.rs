@@ -10,6 +10,7 @@
 //! 设计：只监听本机；所有数据操作经内核；页面为内置字符串（不读磁盘文件）。
 
 mod api;
+mod bundled;
 mod http;
 mod icons;
 mod market_host;
@@ -24,6 +25,7 @@ fn main() {
     let mut lan = false;
     let mut token: Option<String> = None;
     let mut logo_path: Option<std::path::PathBuf> = None;
+    let mut write_icons_to: Option<std::path::PathBuf> = None;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -51,14 +53,22 @@ fn main() {
                     i += 1;
                 }
             }
+            // 打包脚本用：把整套图标写到目录里，写完就退出（不起服务）
+            "--write-icons" => {
+                if let Some(v) = args.get(i + 1) {
+                    write_icons_to = Some(std::path::PathBuf::from(v));
+                    i += 1;
+                }
+            }
             "--help" | "-h" => {
                 println!("用法: cercis-app [--port 8765] [--no-browser] [--lan] [--token <令牌>]");
-                println!("                [--logo <图标.png>]");
+                println!("                [--logo <图标.png>] [--write-icons <目录>]");
                 println!();
                 println!("  默认只绑本机（127.0.0.1）。");
                 println!("  --lan：绑局域网，平板/手机也能用浏览器打开（必须带令牌；");
                 println!("         URL 会在启动时打印，例如 http://192.168.1.5:8765/?token=abcd）。");
                 println!("  --logo：换成自己的图标（必须 PNG；不装就用内置绘制的那个）。");
+                println!("  --write-icons：把整套尺寸图标写到目录后退出（给打包脚本用）。");
                 return;
             }
             _ => {}
@@ -92,7 +102,7 @@ fn main() {
     let local_ip = if lan { lan_ip() } else { None };
 
     // 图标来源：给了 --logo 就用它；文件不对就**说清原因并回退**，不影响开工
-    let icons = match &logo_path {
+    let icon_source = match &logo_path {
         None => icons::IconSource::BuiltIn,
         Some(p) => match icons::IconSource::from_file(p) {
             Ok(src) => {
@@ -105,6 +115,23 @@ fn main() {
             }
         },
     };
+
+    // 打包脚本专用：写完图标就退出（`.icns` / `.ico` / hicolor 都从这套 PNG 生成）
+    if let Some(dir) = &write_icons_to {
+        match icons::write_all(dir, &icon_source) {
+            Ok(names) => {
+                println!("已写出 {} 张图标到 {}", names.len(), dir.display());
+                for n in names {
+                    println!("  {n}");
+                }
+            }
+            Err(e) => {
+                eprintln!("写图标失败：{e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
 
     let url = match (&local_ip, &token) {
         (Some(ip), Some(t)) => format!("http://{ip}:{port}/?token={t}"),
@@ -126,6 +153,24 @@ fn main() {
         cercis_core::CORE_VERSION
     );
     println!("愿瑟希斯捍卫你的思想。 / May Cerces safeguard your thoughts.");
+
+    // 随包的基础工具包：第一次打开（或版本变了）就装进用户级插件目录
+    if let Some(kits) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|d| d.to_path_buf()))
+        .and_then(|dir| bundled::bundled_kits_dir(&dir))
+    {
+        if let Some(global) = plugin_host::global_plugins_dir() {
+            match bundled::install_bundled_kits(&kits, &global) {
+                Ok((installed, _)) if !installed.is_empty() => {
+                    println!("基础工具包：装了 {} 个插件（{}）", installed.len(), installed.join("、"));
+                }
+                Ok(_) => {}
+                Err(e) => eprintln!("基础工具包没装上：{e}"),
+            }
+        }
+    }
+
     if lan {
         println!();
         println!("局域网模式（平板/手机用这个地址打开）：");
@@ -139,12 +184,14 @@ fn main() {
         match req.path.as_str() {
             "/" | "/index.html" => http::Response::html(web::INDEX_HTML),
             // 图标：默认进程内画好发出去（仓库里不放二进制图片）；--logo 时原样发作者的 PNG
-            "/favicon.ico" => http::Response::bytes("image/png", icons.bytes(32, false)),
-            "/icon-64.png" => http::Response::bytes("image/png", icons.bytes(64, false)),
-            "/apple-touch-icon.png" => http::Response::bytes("image/png", icons.bytes(180, false)),
-            "/icon-192.png" => http::Response::bytes("image/png", icons.bytes(192, false)),
+            "/favicon.ico" => http::Response::bytes("image/png", icon_source.bytes(32, false)),
+            "/icon-64.png" => http::Response::bytes("image/png", icon_source.bytes(64, false)),
+            "/apple-touch-icon.png" => {
+                http::Response::bytes("image/png", icon_source.bytes(180, false))
+            }
+            "/icon-192.png" => http::Response::bytes("image/png", icon_source.bytes(192, false)),
             "/icon-maskable-192.png" => {
-                http::Response::bytes("image/png", icons.bytes(192, true))
+                http::Response::bytes("image/png", icon_source.bytes(192, true))
             }
             _ if req.path.starts_with("/api/") => api::handle(req),
             _ => http::Response::error(404, "not found"),

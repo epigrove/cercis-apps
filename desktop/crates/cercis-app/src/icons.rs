@@ -68,10 +68,28 @@ impl IconSource {
     }
 }
 
+/// 打包脚本用：把一整套尺寸的图标写进目录（macOS 的 .icns、Windows 的 .ico、
+/// Linux 的 hicolor 主题、以及网页那几张，都从这里取）。
+pub fn write_all(dir: &Path, src: &IconSource) -> std::io::Result<Vec<String>> {
+    std::fs::create_dir_all(dir)?;
+    let mut written = Vec::new();
+    for size in [16u32, 32, 64, 128, 180, 192, 256, 512, 1024] {
+        let name = format!("icon-{size}.png");
+        std::fs::write(dir.join(&name), src.bytes(size, false))?;
+        written.push(name);
+    }
+    for size in [192u32, 512] {
+        let name = format!("icon-maskable-{size}.png");
+        std::fs::write(dir.join(&name), src.bytes(size, true))?;
+        written.push(name);
+    }
+    Ok(written)
+}
+
 // ---------------------------------------------------------------- 画图
 
 fn render(size: u32, rounded: bool, mark_scale: f32) -> Vec<u8> {
-    let s = size.clamp(32, 1024);
+    let s = size.clamp(16, 1024);
     let sf = s as f32;
     // 每像素 3×3 超采样，边缘就不会有锯齿
     const SS: u32 = 3;
@@ -350,6 +368,28 @@ mod tests {
         let fake = dir.join("fake.png");
         std::fs::write(&fake, b"not a png").unwrap();
         assert!(IconSource::from_file(&fake).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 打包脚本要一整套图标（.icns / .ico / hicolor）；写出来的每一个都得是能用的 PNG。
+    #[test]
+    fn write_all_emits_a_full_icon_set() {
+        let dir = std::env::temp_dir().join("cercis-icon-set-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let names = write_all(&dir, &IconSource::BuiltIn).unwrap();
+        assert_eq!(names.len(), 11);
+        for name in &names {
+            let bytes = std::fs::read(dir.join(name)).unwrap();
+            assert_eq!(&bytes[..8], &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a], "{name}");
+        }
+        // 尺寸要跟文件名对上（图标集最容易在这里出错）
+        let png16 = std::fs::read(dir.join("icon-16.png")).unwrap();
+        assert_eq!(be32(&png16, 16), 16);
+        assert_eq!(be32(&png16, 20), 16);
+        let big = std::fs::read(dir.join("icon-1024.png")).unwrap();
+        assert_eq!(be32(&big, 16), 1024);
+        let m = std::fs::read(dir.join("icon-maskable-512.png")).unwrap();
+        assert_eq!(be32(&m, 16), 512);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

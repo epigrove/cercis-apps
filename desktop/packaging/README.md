@@ -27,10 +27,34 @@
 
 ```
 packaging/
-├── linux/     build.sh + cercis.desktop + README（NAS 完整界面按文档放 Linux 客户端）
-├── windows/   build.ps1 + README
-└── macos/     build.sh + README（产出一个 .app 目录骨架，签名/公证另说）
+├── stage-basic-kits.sh      把基础工具包摆成"已下载好的市场仓库"（安装包与源码安装共用）
+├── install-basic-kits.sh    把基础工具包**装进**用户级插件目录（走内核的安装通道，写台账）
+├── linux/     build.sh + cercis.desktop + README（装到 ~/.local，含基础工具包）
+├── windows/   build.ps1 + README（历史脚本，**这一轮没跟着改**，待补）
+└── macos/     build.sh + README（出 .app + 可分发的 zip，图标与基础工具包都打进包里）
 ```
+
+## 安装包到底装了什么（D35）
+
+**app = 内核 + 基础工具包**。这句话要落到地上，得有人把两样东西放对位置：
+
+| 平台 | 怎么落 |
+|------|--------|
+| macOS（`.app`） | 基础工具包**打进包里**（`Contents/Resources/kits/basic`）；用户**第一次打开 app 时**由 app 自己装进 `~/.cercis/plugins`（见 `src/bundled.rs`）。装的过程走内核的 `market::install_from_dir`——写安装台账、记内容指纹、标成"随包"（**不可删除，只能停用/屏蔽**，D42） |
+| Linux（源码安装） | `linux/build.sh` 装完二进制后调 `install-basic-kits.sh`，同样写台账 |
+| 科研工具包 | **不在安装包里**：走插件市场（默认预置、可删），按需下载 |
+
+## 图标：仓库里不放图片
+
+图标由 app **自己画出来**（`src/icons.rs` 里手写了一个最小 PNG 编码器），原因是：
+发布扫描对"不认识的二进制"一律保守，仓库里塞图片文件会一直卡在"待人工确认"。
+
+```bash
+./cercis-app --write-icons <目录>     # 写出 16…1024 一整套 PNG（打包脚本用）
+./cercis-app --logo 我的图标.png      # 换成作者自己的图标（只收 PNG）
+```
+
+macOS 的 `.icns` 就是打包脚本拿这套 PNG 再跑 `iconutil` 生成的。
 
 ## 局域网模式（田间/实验室最常用）
 
