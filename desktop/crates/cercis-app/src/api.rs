@@ -3382,7 +3382,7 @@ mod tests {
             "POST",
             "/api/remote/claim",
             &[],
-            &format!(r#"{{"path":"{main_s}","who":"wenhuan@laptop","minutes":30}}"#),
+            &format!(r#"{{"path":"{main_s}","who":"alice@laptop","minutes":30}}"#),
         ));
         let body: Value = body_json(&res);
         assert_eq!(body["ok"], true, "{body}");
@@ -3393,7 +3393,7 @@ mod tests {
             "POST",
             "/api/remote/release",
             &[],
-            &format!(r#"{{"path":"{main_s}","who":"wenhuan@laptop"}}"#),
+            &format!(r#"{{"path":"{main_s}","who":"alice@laptop"}}"#),
         ));
         let body: Value = body_json(&res);
         assert!(body["cleared"].as_u64().unwrap() >= 1);

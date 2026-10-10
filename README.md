@@ -1,69 +1,77 @@
-# cercis-apps（各平台 app）
+# cercis-apps (apps)
 
-Cercis 的 app：各平台界面，同时是**插件总管**（发现、授权、以子进程调用插件）。
+**English** | [中文](README.zh-CN.md)
+
+The Cercis app: the user interface on every platform, and the **plugin host** (it discovers
+plugins, grants permissions and calls them as subprocesses).
 
 ```
 apps/
-└── desktop/                桌面端（macOS 先行；Linux / Windows 跟进）
-    ├── crates/cercis-app/  一个可执行文件：本地 HTTP 服务 + 内置网页界面
+└── desktop/                desktop (macOS first; Linux / Windows following)
+    ├── crates/cercis-app/  one executable: local HTTP server + built-in web UI
     │   ├── src/{main,http,api,plugin_host,market_host,icons,bundled}.rs
-    │   └── src/web/index.html   界面（编译进二进制，不读磁盘）
-    ├── packaging/          各平台打包脚本（linux / macos / windows）
-    └── ui-tests/           界面自动验收（Playwright 无头浏览器，无人值守）
+    │   └── src/web/index.html   the UI (compiled into the binary, never read from disk)
+    ├── packaging/          per-platform packaging scripts (linux / macos / windows)
+    └── ui-tests/           automated UI acceptance (headless Playwright, unattended)
 ```
 
-平板/手机现在不需要单独客户端：电脑上 `cercis-app --lan` 打印带令牌的局域网地址，
-用平板浏览器打开、存到主屏幕即可（原生移动客户端待做，评估见 `cercis-docs`）。
+Tablets and phones need no separate client today: run `cercis-app --lan` on a computer, and it
+prints a token-bearing LAN address you open in the tablet browser and add to the home screen (a
+native mobile client is still to come; the assessment lives in `cercis-docs`).
 
-## 怎么构建
+## Building
 
-app **不含数据逻辑**，它直接链接内核库（`cercis-core`）。因此源码构建要求内核仓库
-就在**旁边一级**：工作布局是 `<任意目录>/{kernel, kits/basic, apps}`——
-`apps/desktop/Cargo.toml` 里写的是 `path = "../../kernel/crates/cercis-core"`。
+The app **contains no data logic** — it links the kernel library (`cercis-core`) directly. Source
+builds therefore expect the kernel repository **one level up**: the workspace layout is
+`<anywhere>/{kernel, kits/basic, apps}`, because `apps/desktop/Cargo.toml` declares
+`path = "../../kernel/crates/cercis-core"`.
 
 ```bash
-# 在 <任意目录>/apps/desktop 下
-cargo run -- --no-browser --port 8765     # 浏览器打开 http://127.0.0.1:8765
+# from <anywhere>/apps/desktop
+cargo run -- --no-browser --port 8765     # opens http://127.0.0.1:8765
 ```
 
-打安装包（内置内核与基础工具包；**未签名**，首次打开要手动放行）：
+Build an installer (kernel and basic kit inside; **unsigned**, so the first launch needs a manual
+approval step):
 
 ```bash
-bash packaging/macos/build.sh      # 出 Cercis.app 与可分发的 zip
-bash packaging/linux/build.sh      # 装到 ~/.local（含桌面菜单项）
+bash packaging/macos/build.sh      # produces Cercis.app and a distributable zip
+bash packaging/linux/build.sh      # installs into ~/.local (with a desktop entry)
 ```
 
-界面自动验收（自己造演示项目、起 app、用无头浏览器真点一遍，不需要人工）：
+Automated UI acceptance (it builds a demo project, starts the app and drives a headless browser —
+no human involved):
 
 ```bash
 bash ui-tests/run-ui-acceptance.sh; cat output/playwright/UI-REPORT.md
 ```
 
-插件调用契约（与需求文档 §14.7 接口 A 对应）：
+## Plugin calling contract
 
 ```text
-<插件入口> <命令…> --project <项目目录> --json [--cercis <内核命令>] [--allow-write]
+<plugin entry> <command…> --project <project dir> --json [--cercis <kernel command>] [--allow-write]
 ```
 
-- **项目内插件必须先被信任**才运行；全局插件（`~/.cercis/plugins`，可用
-  `CERCIS_GLOBAL_PLUGINS` 换目录）视为已安装。
-- `--allow-write` 只在插件清单声明了 `write` 时才注入：插件的权限由 app 把关。
-- 插件是**子进程**：它崩溃或卡住都不影响主界面与数据完整性。
-- 缺插件时对应按钮自动隐藏并说明缺什么，打开/浏览/校验等主流程不受影响。
+- **Project plugins must be trusted before they run**; global plugins (in `~/.cercis/plugins`,
+  or wherever `CERCIS_GLOBAL_PLUGINS` points) count as installed.
+- `--allow-write` is injected only when the manifest declares `write`: the app is the gatekeeper.
+- Plugins are **subprocesses**: a crash or a hang cannot damage the UI or the data.
+- If a plugin is missing, its buttons disappear and say what is missing; opening, browsing and
+  validating keep working.
 
-环境变量（开发用）：
+Environment variables (developer-facing):
 
-| 变量 | 作用 |
-|------|------|
-| `CERCIS_GLOBAL_PLUGINS` | 全局插件目录（默认 `~/.cercis/plugins`；旧名 `CERCIS_PLUGINS` 仍认） |
-| `CERCIS_BIN` | 内核命令行路径（默认找 PATH 或 app 同级目录） |
-| `CERCIS_BUNDLED_KITS` | 随包基础工具包的位置（安装包里自带；app 第一次启动会装进全局插件目录） |
+| Variable | Purpose |
+|----------|---------|
+| `CERCIS_GLOBAL_PLUGINS` | the global plugin directory (default `~/.cercis/plugins`; the old `CERCIS_PLUGINS` still works) |
+| `CERCIS_BIN` | path to the kernel command line (defaults to PATH or a sibling of the app) |
+| `CERCIS_BUNDLED_KITS` | where the bundled basic kit lives (installers ship it; the app installs it into the global plugin directory on first launch) |
 
-## 形态分级（回顾）
+## Form factors
 
-| 形态 | 重点 |
-|------|------|
-| 桌面 GUI | 信息密度、批量编辑、导入导出 |
-| 桌面 CLI | 自动化、AI 调用（与 GUI 同权） |
-| Pad | 翻阅、手写、分屏、拍照 |
-| 手机 | 速记、扫码、拍照、待办；离线优先 |
+| Form factor | Focus |
+|-------------|-------|
+| Desktop GUI | information density, batch editing, import/export |
+| Desktop CLI | automation, AI calls (same rights as the GUI) |
+| Tablet | browsing, handwriting, split view, photos |
+| Phone | quick notes, scanning, photos, to-dos; offline first |
