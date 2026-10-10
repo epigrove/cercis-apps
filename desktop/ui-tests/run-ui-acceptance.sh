@@ -36,6 +36,9 @@ pass=0; fail=0; app_pid=""
 ok()  { echo "  ✅ $1"; pass=$((pass+1)); }
 bad() { echo "  ❌ $1"; fail=$((fail+1)); }
 
+# 报告里**不写本机绝对路径**（仓库要公开，别把"谁在什么目录下跑的"带出去）
+rel() { case "$1" in "$repo"/*) echo "${1#"$repo"/}";; "$apps_repo"/*) echo "${1#"$apps_repo"/}";; *) echo "$(basename "$1")";; esac; }
+
 pw() { "$PWCLI" "$@" 2>&1; }
 snap() { pw snapshot; }
 # 断言：快照里出现某段文字
@@ -238,8 +241,8 @@ report="$OUT/UI-REPORT.md"
   echo "# 界面自动验收报告"
   echo
   echo "- 时间：$(date '+%Y-%m-%d %H:%M:%S %Z')"
-  echo "- 内核：\`$KERNEL\`"
-  echo "- app：\`$APP\`"
+  echo "- 内核：\`$(rel "$KERNEL")\`"
+  echo "- app：\`$(rel "$APP")\`"
   echo "- 结果：**通过 $pass ｜ 失败 $fail**"
   echo "- 截图：$(ls "$OUT"/*.png 2>/dev/null | wc -l | tr -d ' ') 张（全绿时自动清掉、失败时才保留；要留就 KEEP_SCREENSHOTS=1 跑）"
   echo
