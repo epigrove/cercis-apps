@@ -1,10 +1,10 @@
 # 界面自动验收报告
 
-- 时间：2026-10-05 22:07:52 CST
+- 时间：2026-10-10 16:40:13 CST
 - 内核：`/Users/wenhuan/PycharmProjects/Cercis/kernel/target/debug/cercis`
 - app：`/Users/wenhuan/PycharmProjects/Cercis/apps/desktop/target/debug/cercis-app`
 - 结果：**通过 24 ｜ 失败 0**
-- 截图：6 张（同目录 .png，不入库）
+- 截图：6 张（全绿时自动清掉、失败时才保留；要留就 KEEP_SCREENSHOTS=1 跑）
 
 ## 这一轮验了什么
 

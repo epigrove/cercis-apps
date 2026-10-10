@@ -11,6 +11,7 @@
 
 mod api;
 mod http;
+mod icons;
 mod market_host;
 mod plugin_host;
 mod web;
@@ -22,6 +23,7 @@ fn main() {
     let mut open_browser = true;
     let mut lan = false;
     let mut token: Option<String> = None;
+    let mut logo_path: Option<std::path::PathBuf> = None;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -42,12 +44,21 @@ fn main() {
                     i += 1;
                 }
             }
+            // 用自己的图标（PNG）：页签、主屏、iOS 都用它
+            "--logo" => {
+                if let Some(v) = args.get(i + 1) {
+                    logo_path = Some(std::path::PathBuf::from(v));
+                    i += 1;
+                }
+            }
             "--help" | "-h" => {
                 println!("用法: cercis-app [--port 8765] [--no-browser] [--lan] [--token <令牌>]");
+                println!("                [--logo <图标.png>]");
                 println!();
                 println!("  默认只绑本机（127.0.0.1）。");
                 println!("  --lan：绑局域网，平板/手机也能用浏览器打开（必须带令牌；");
                 println!("         URL 会在启动时打印，例如 http://192.168.1.5:8765/?token=abcd）。");
+                println!("  --logo：换成自己的图标（必须 PNG；不装就用内置绘制的那个）。");
                 return;
             }
             _ => {}
@@ -79,6 +90,22 @@ fn main() {
     };
 
     let local_ip = if lan { lan_ip() } else { None };
+
+    // 图标来源：给了 --logo 就用它；文件不对就**说清原因并回退**，不影响开工
+    let icons = match &logo_path {
+        None => icons::IconSource::BuiltIn,
+        Some(p) => match icons::IconSource::from_file(p) {
+            Ok(src) => {
+                println!("图标：{}", p.display());
+                src
+            }
+            Err(e) => {
+                eprintln!("自定义图标没装上：{e}（改用内置图标）");
+                icons::IconSource::BuiltIn
+            }
+        },
+    };
+
     let url = match (&local_ip, &token) {
         (Some(ip), Some(t)) => format!("http://{ip}:{port}/?token={t}"),
         _ => format!("http://127.0.0.1:{port}"),
@@ -108,13 +135,19 @@ fn main() {
     }
     println!();
 
-    let handler = |req: &http::Request| -> http::Response {
-        if req.path == "/" || req.path == "/index.html" {
-            http::Response::html(web::INDEX_HTML)
-        } else if req.path.starts_with("/api/") {
-            api::handle(req)
-        } else {
-            http::Response::error(404, "not found")
+    let handler = move |req: &http::Request| -> http::Response {
+        match req.path.as_str() {
+            "/" | "/index.html" => http::Response::html(web::INDEX_HTML),
+            // 图标：默认进程内画好发出去（仓库里不放二进制图片）；--logo 时原样发作者的 PNG
+            "/favicon.ico" => http::Response::bytes("image/png", icons.bytes(32, false)),
+            "/icon-64.png" => http::Response::bytes("image/png", icons.bytes(64, false)),
+            "/apple-touch-icon.png" => http::Response::bytes("image/png", icons.bytes(180, false)),
+            "/icon-192.png" => http::Response::bytes("image/png", icons.bytes(192, false)),
+            "/icon-maskable-192.png" => {
+                http::Response::bytes("image/png", icons.bytes(192, true))
+            }
+            _ if req.path.starts_with("/api/") => api::handle(req),
+            _ => http::Response::error(404, "not found"),
         }
     };
 

@@ -2,10 +2,18 @@
 <html lang="zh">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Cercis</title>
-<!-- 空图标：不请求 favicon，浏览器控制台就不会有 404 报错 -->
-<link rel="icon" href="data:,">
+<!-- 图标由 app 进程内生成（见 src/icons.rs）：仓库里不放图片文件，也不会再请求 favicon 报 404 -->
+<link rel="icon" type="image/png" sizes="64x64" href="/icon-64.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+<meta name="theme-color" content="#7a3e6d">
+<!-- 平板/手机"添加到主屏幕"：像 App 一样全屏打开；清单地址在脚本里补上令牌 -->
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Cercis">
+<link rel="manifest" id="manifestLink" href="/api/app-manifest">
 <style>
   :root {
     --bg: #faf9f7; --fg: #24211e; --muted: #6b6560; --line: #e3ded7;
@@ -61,6 +69,31 @@
   .todos li { margin: 4px 0; }
   footer { padding: 14px 24px 40px; color: var(--muted); font-size: 12.5px; text-align: center; }
   label.chk { display: inline-flex; gap: 6px; align-items: center; font-size: 13.5px; }
+
+  /* ── 平板 / 手机（K03：同一份界面在窄屏与触屏上也要顺手） ───────────── */
+  /* 手指比鼠标粗：触屏设备上把可点的东西垫高 */
+  @media (pointer: coarse) {
+    button, select, input, .tab { min-height: 40px; }
+    .tab { padding: 8px 14px; }
+    th, td { padding: 9px 10px; }
+  }
+  /* 窄屏：顶部工具条收成两行，宽表格改成横向滑动，而不是把页面撑破 */
+  @media (max-width: 820px) {
+    header { padding: 12px 14px; gap: 10px; }
+    header h1 { font-size: 17px; }
+    header .slogan { font-size: 12px; }
+    main { padding: 14px 14px calc(48px + env(safe-area-inset-bottom)) 14px; }
+    .card { padding: 13px; overflow-x: auto; }
+    table { font-size: 13px; }
+    #projectPath { width: 100% !important; }
+    #openBtn { min-width: 118px; }
+    .scroll { max-height: 60vh; }
+  }
+  /* 手机：标语先让位给操作区 */
+  @media (max-width: 520px) {
+    header .slogan { display: none; }
+    footer { padding: 12px 14px 32px; }
+  }
 </style>
 </head>
 <body>
@@ -425,13 +458,18 @@
   </div>
 </main>
 
-<footer>愿瑟希斯捍卫你的思想。 · <em>May Cerces safeguard your thoughts.</em></footer>
+<footer>
+  <!-- 用平板/手机从局域网打开时才出现：教一次"存到主屏幕"，下次就像 App 一样打开 -->
+  <div id="homeScreenHint" class="muted" style="display:none; margin-bottom:10px;"></div>
+  愿瑟希斯捍卫你的思想。 · <em>May Cerces safeguard your thoughts.</em>
+</footer>
 
 <script>
 const I18N = {
   zh: {
     slogan: "愿瑟希斯捍卫你的思想。",
     open: "打开项目", placeholder: "项目文件夹路径",
+    addToHome: "📱 把这一页存到主屏幕，下次就像 App 一样打开：浏览器菜单 →「添加到主屏幕」（iPhone 用「分享」→「添加到主屏幕」）。田里没网也能用，数据仍在电脑那个文件夹里。",
     tabs: { data: "数据", scribe: "录入员", plugins: "插件", market: "插件市场", access: "加密区域", transfer: "搬运", log: "变更流水", tools: "工具", todos: "待办" },
     rows: "行", refresh: "刷新", filterPh: "筛选：列:运算符:值（如 value_num:gt:20）",
     trust: "信任并启用", revoke: "撤销信任", trusted: "已信任", untrusted: "未信任",
@@ -632,6 +670,7 @@ const I18N = {
   en: {
     slogan: "May Cerces safeguard your thoughts.",
     open: "Open project", placeholder: "Project folder path",
+    addToHome: "📱 Add this page to your home screen so it opens like an app: browser menu → \u201cAdd to Home screen\u201d (on iPhone: Share → \u201cAdd to Home Screen\u201d). It still works in the field without internet; the data stays in the folder on your computer.",
     tabs: { data: "Data", scribe: "Scribe", plugins: "Plugins", market: "Market", access: "Encrypted zones", transfer: "Transfer", log: "Change log", tools: "Tools", todos: "To-dos" },
     rows: "rows", refresh: "Refresh", filterPh: "Filter: col:op:value (e.g. value_num:gt:20)",
     trust: "Trust & enable", revoke: "Revoke", trusted: "trusted", untrusted: "untrusted",
@@ -842,7 +881,18 @@ let sortSpec = "";         // 排序：列:asc|desc（点表头切换）
 
 const $ = (id) => document.getElementById(id);
 
+// 装到主屏用的清单：LAN 模式下地址里带着令牌，清单也要带着，否则点图标进来会被 401 挡住
+$("manifestLink").href = "/api/app-manifest" + (TOKEN ? "?token=" + encodeURIComponent(TOKEN) : "");
+
+// 是不是**别的设备**（平板/手机）打开的这一页？只有这种情况才提示"存到主屏幕"
+const FROM_OTHER_DEVICE = !["127.0.0.1", "localhost", "::1", ""].includes(location.hostname);
+
 function t() { return I18N[lang]; }
+
+function updateHomeScreenHint() {
+  show("homeScreenHint", FROM_OTHER_DEVICE);
+  if (FROM_OTHER_DEVICE) $("homeScreenHint").textContent = t().addToHome;
+}
 
 async function apiGet(path, params) {
   const q = new URLSearchParams({ ...(params || {}), lang });
@@ -883,6 +933,7 @@ function setLang(next) {
   $("wizardName").placeholder = t().wizardName;
   $("wizardBtn").textContent = t().create;
   $("welcomeBody").innerHTML = t().welcome;
+  updateHomeScreenHint();
   if (project) { renderTabs(); loadActiveTab(); renderPluginActions(); }
 }
 

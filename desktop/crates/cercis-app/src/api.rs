@@ -50,6 +50,20 @@ fn tail(text: &str, max: usize) -> String {
     format!("…{}", &text[start..])
 }
 
+/// 极简 URL 转义（用在 manifest 的 `start_url` 里；令牌默认是十六进制，这里是兜底）。
+fn url_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 /// 处理一个 API 请求。
 pub fn handle(req: &Request) -> Response {
     let lang = Lang::from_str(req.query.get("lang").map(|s| s.as_str()).unwrap_or("zh"));
@@ -63,6 +77,41 @@ pub fn handle(req: &Request) -> Response {
             })
             .to_string(),
         ),
+
+        // 平板/手机"添加到主屏幕"用的清单（注意：与"生成机器清单"的 /api/manifest 不是一回事）。
+        //
+        // 为什么做成接口而不是静态文件：LAN 模式下**整站都要令牌**，如果 start_url 不带令牌，
+        // 从主屏图标打开就会是 401。这里把当前请求带的令牌原样写回 start_url。
+        // （图标本身不需要令牌，见 http::public_asset。）
+        "/api/app-manifest" => {
+            let token = req.query.get("token").cloned().unwrap_or_default();
+            let start_url = if token.is_empty() {
+                "/".to_string()
+            } else {
+                format!("/?token={}", url_escape(&token))
+            };
+            let body = json!({
+                "name": "Cercis",
+                "short_name": "Cercis",
+                "description": lang.t(
+                    "本地优先的科研数据记录工具：文件夹即数据库",
+                    "Local-first research data recorder: the folder is the database",
+                ),
+                "lang": if lang == Lang::Zh { "zh-CN" } else { "en" },
+                "start_url": start_url,
+                "scope": "/",
+                "display": "standalone",
+                "orientation": "any",
+                "background_color": "#faf9f7",
+                "theme_color": "#7a3e6d",
+                "icons": [
+                    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+                    { "src": "/icon-maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" }
+                ]
+            })
+            .to_string();
+            Response::bytes("application/manifest+json", body.into_bytes())
+        }
 
         // 打开项目：返回概览（表、行数、模板、语言）
         "/api/open" => {
@@ -3603,5 +3652,29 @@ mod tests {
                 std::fs::copy(&p, &dest).unwrap();
             }
         }
+    }
+
+    /// K03：装到主屏用的清单——LAN 模式下 start_url 必须带着令牌，否则点图标就是 401。
+    #[test]
+    fn web_manifest_carries_the_token_in_start_url() {
+        let plain = handle(&req("GET", "/api/app-manifest", &[], ""));
+        assert_eq!(plain.content_type, "application/manifest+json");
+        let v = body_json(&plain);
+        assert_eq!(v["start_url"], "/");
+        assert_eq!(v["display"], "standalone");
+        // 图标要齐全：普通 / 可裁切 / iOS 用的 180
+        let icons = v["icons"].as_array().unwrap();
+        assert!(icons.iter().any(|i| i["purpose"] == "maskable"));
+        assert!(icons.iter().any(|i| i["purpose"] == "any"));
+
+        let with_token = handle(&req("GET", "/api/app-manifest", &[("token", "a1b2c3")], ""));
+        assert_eq!(body_json(&with_token)["start_url"], "/?token=a1b2c3");
+
+        // 令牌里的特殊字符要转义，别把 start_url 弄坏
+        let odd = handle(&req("GET", "/api/app-manifest", &[("token", "a b&c")], ""));
+        assert_eq!(body_json(&odd)["start_url"], "/?token=a%20b%26c");
+
+        // 别把"生成机器清单"那个 POST /api/manifest 弄混了：它仍然要 POST
+        assert_eq!(handle(&req("GET", "/api/manifest", &[], "")).status, 400);
     }
 }

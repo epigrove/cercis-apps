@@ -46,6 +46,15 @@ impl Response {
         }
     }
 
+    /// 自定义类型（图标 PNG、webmanifest…）。
+    pub fn bytes(content_type: &str, body: Vec<u8>) -> Self {
+        Self {
+            status: 200,
+            content_type: content_type.into(),
+            body,
+        }
+    }
+
     pub fn error(status: u16, message: &str) -> Self {
         let body = serde_json::json!({
             "ok": false,
@@ -101,6 +110,12 @@ impl Guard {
         }
         // 2) 令牌：LAN 与"带令牌的本机模式"都要对
         if let Some(expected) = &self.token {
+            // 例外：图标这类**不含任何数据**的静态资源。浏览器取 manifest 里列出的图标时
+            // 既不带查询串也不带自定义头，如果也要求令牌，"添加到主屏幕"就会变成一个没图标的方块。
+            // 令牌保护的始终是**页面与数据**，不是应用图标。
+            if public_asset(&req.path) {
+                return Ok(());
+            }
             let given = req
                 .query
                 .get("token")
@@ -116,6 +131,18 @@ impl Guard {
         }
         Ok(())
     }
+}
+
+/// 不需要令牌的静态资源（图标；理由见 `Guard::check`）。
+pub fn public_asset(path: &str) -> bool {
+    matches!(
+        path,
+        "/favicon.ico"
+            | "/icon-64.png"
+            | "/icon-192.png"
+            | "/icon-maskable-192.png"
+            | "/apple-touch-icon.png"
+    )
 }
 
 /// 带闸门的启动。
@@ -291,12 +318,19 @@ pub fn url_decode(s: &str) -> String {
 }
 
 fn write_response(stream: &mut TcpStream, resp: &Response) -> std::io::Result<()> {
+    // 图标可以放心缓存（内容固定、不含数据）；页面与接口一律不缓存（数据必须新鲜）。
+    let cache = if resp.content_type.starts_with("image/png") {
+        "public, max-age=86400"
+    } else {
+        "no-store"
+    };
     let head = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: {}\r\nConnection: close\r\n\r\n",
         resp.status,
         status_text(resp.status),
         resp.content_type,
-        resp.body.len()
+        resp.body.len(),
+        cache
     );
     stream.write_all(head.as_bytes())?;
     stream.write_all(&resp.body)?;
@@ -386,6 +420,24 @@ mod tests {
         // 本机模式下 Host 仍然要校验
         assert!(g
             .check(&req_with("/", &[("token", "t")], None), Some("evil.example"))
+            .is_err());
+    }
+
+    #[test]
+    fn icons_do_not_need_the_token_but_pages_and_api_do() {
+        let g = Guard::lan("s3cret");
+        let host = Some("192.168.1.5:8765");
+        // 图标：浏览器取 manifest 里的图标时不会带令牌，必须放行
+        for p in ["/favicon.ico", "/icon-64.png", "/icon-192.png", "/apple-touch-icon.png"] {
+            assert!(g.check(&req_with(p, &[], None), host).is_ok(), "{p} 应当放行");
+        }
+        // 页面与数据接口：仍然要令牌
+        for p in ["/", "/api/open", "/api/app-manifest"] {
+            assert!(g.check(&req_with(p, &[], None), host).is_err(), "{p} 不该放行");
+        }
+        // 本机模式下 Host 校验对图标一样有效（防 DNS rebinding）
+        assert!(Guard::local_only()
+            .check(&req_with("/icon-192.png", &[], None), Some("evil.example"))
             .is_err());
     }
 }
